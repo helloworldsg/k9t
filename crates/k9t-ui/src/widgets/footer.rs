@@ -1,8 +1,8 @@
 use ratatui::{
+    Frame,
     style::Modifier,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::theme::Theme;

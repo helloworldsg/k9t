@@ -1,16 +1,8 @@
-use k8s_openapi::api::{
-    apps::v1::Deployment,
-    core::v1::Node,
-};
+use k8s_openapi::api::{apps::v1::Deployment, core::v1::Node};
 use kube::api::{Api, DeleteParams, Patch, PatchParams};
 
-pub async fn delete_pod(
-    client: &kube::Client,
-    namespace: &str,
-    name: &str,
-) -> anyhow::Result<()> {
-    let pods: Api<k8s_openapi::api::core::v1::Pod> =
-        Api::namespaced(client.clone(), namespace);
+pub async fn delete_pod(client: &kube::Client, namespace: &str, name: &str) -> anyhow::Result<()> {
+    let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), namespace);
     pods.delete(name, &DeleteParams::default()).await?;
     Ok(())
 }

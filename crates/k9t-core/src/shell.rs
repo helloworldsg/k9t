@@ -25,11 +25,11 @@ impl ShellSession {
             params = params.container(c);
         }
 
-        let attached = pods
-            .exec(pod_name, command, &params)
-            .await?;
+        let attached = pods.exec(pod_name, command, &params).await?;
 
-        Ok(Self { attached: Some(attached) })
+        Ok(Self {
+            attached: Some(attached),
+        })
     }
 
     pub fn stdout(&mut self) -> Option<impl tokio::io::AsyncRead + Unpin> {

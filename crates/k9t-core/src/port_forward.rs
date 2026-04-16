@@ -9,12 +9,7 @@ pub struct PortForward {
 }
 
 impl PortForward {
-    pub fn new(
-        namespace: String,
-        pod_name: String,
-        local_port: u16,
-        remote_port: u16,
-    ) -> Self {
+    pub fn new(namespace: String, pod_name: String, local_port: u16, remote_port: u16) -> Self {
         Self {
             pod_name,
             namespace,
@@ -39,10 +34,7 @@ impl PortForward {
         self.remote_port
     }
 
-    pub async fn connect(
-        &self,
-        client: kube::Client,
-    ) -> anyhow::Result<kube::api::Portforwarder> {
+    pub async fn connect(&self, client: kube::Client) -> anyhow::Result<kube::api::Portforwarder> {
         let pods: Api<Pod> = Api::namespaced(client, &self.namespace);
         let pf = pods
             .portforward(&self.pod_name, &[self.remote_port])

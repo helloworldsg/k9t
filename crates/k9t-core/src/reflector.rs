@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
-use kube::{Api, Client, Resource, runtime::{watcher, reflector, WatchStreamExt}};
+use kube::{
+    Api, Client, Resource,
+    runtime::{WatchStreamExt, reflector, watcher},
+};
 use serde::de::DeserializeOwned;
 
 use crate::resource::PodInfo;

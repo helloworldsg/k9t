@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use ratatui::{
+    Frame,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::theme::Theme;

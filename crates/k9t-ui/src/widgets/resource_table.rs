@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::Constraint,
     style::Style,
     text::Span,
     widgets::{Block, Cell, Row, Table},
-    Frame,
 };
 
 use k9t_app::TableRow;

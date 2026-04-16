@@ -15,13 +15,10 @@ use crate::mode::{ConfirmContext, ContainerPickerIntent, Mode};
 #[derive(Debug, Clone)]
 pub enum TableRow {
     /// A pod row — may be collapsed or expanded
-    Pod {
-        pod: PodInfo,
-        expanded: bool,
-    },
+    Pod { pod: PodInfo, expanded: bool },
     /// A container sub-row, indented under its parent pod
     Container {
-        pod_index: usize,  // Index into App::pods for the parent pod
+        pod_index: usize, // Index into App::pods for the parent pod
         container: ContainerDetail,
         container_index: usize, // Index within the pod's container_details
         is_last: bool,          // Whether this is the last container in the pod
@@ -465,8 +462,7 @@ impl App {
         match (key.modifiers, key.code) {
             // ── Navigation (k9s: j/k/g/G) ──
             (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
-                self.selected_index =
-                    (self.selected_index + 1).min(total_rows.saturating_sub(1));
+                self.selected_index = (self.selected_index + 1).min(total_rows.saturating_sub(1));
             }
             (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
                 self.selected_index = self.selected_index.saturating_sub(1);
@@ -521,7 +517,11 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Char('l')) => {
                 if let Some(row) = self.selected_row() {
                     match &row {
-                        TableRow::Container { pod_index, container, .. } => {
+                        TableRow::Container {
+                            pod_index,
+                            container,
+                            ..
+                        } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
                                 self.pending_shell = Some(ShellCommand::kubectl_logs(
                                     &pod.namespace,
@@ -536,7 +536,8 @@ impl App {
                             if pod.containers.len() > 1 {
                                 self.container_choices = pod.containers.clone();
                                 self.container_picker_index = 0;
-                                self.mode = Mode::ContainerPicker(ContainerPickerIntent::Logs(false));
+                                self.mode =
+                                    Mode::ContainerPicker(ContainerPickerIntent::Logs(false));
                             } else {
                                 let container = pod.containers.first().cloned();
                                 self.pending_shell = Some(ShellCommand::kubectl_logs(
@@ -555,7 +556,11 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Char('p')) => {
                 if let Some(row) = self.selected_row() {
                     match &row {
-                        TableRow::Container { pod_index, container, .. } => {
+                        TableRow::Container {
+                            pod_index,
+                            container,
+                            ..
+                        } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
                                 self.pending_shell = Some(ShellCommand::kubectl_logs(
                                     &pod.namespace,
@@ -570,7 +575,8 @@ impl App {
                             if pod.containers.len() > 1 {
                                 self.container_choices = pod.containers.clone();
                                 self.container_picker_index = 0;
-                                self.mode = Mode::ContainerPicker(ContainerPickerIntent::Logs(true));
+                                self.mode =
+                                    Mode::ContainerPicker(ContainerPickerIntent::Logs(true));
                             } else {
                                 let container = pod.containers.first().cloned();
                                 self.pending_shell = Some(ShellCommand::kubectl_logs(
@@ -601,7 +607,11 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Char('s')) => {
                 if let Some(row) = self.selected_row() {
                     match &row {
-                        TableRow::Container { pod_index, container, .. } => {
+                        TableRow::Container {
+                            pod_index,
+                            container,
+                            ..
+                        } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
                                 self.pending_shell = Some(ShellCommand::kubectl_exec(
                                     &pod.namespace,
@@ -645,7 +655,11 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Char('i')) => {
                 if let Some(row) = self.selected_row() {
                     match &row {
-                        TableRow::Container { pod_index, container, .. } => {
+                        TableRow::Container {
+                            pod_index,
+                            container,
+                            ..
+                        } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
                                 self.set_image_namespace = pod.namespace.clone();
                                 self.set_image_pod = pod.name.clone();
@@ -1129,7 +1143,8 @@ impl App {
                     }
 
                     // If a container row is selected, use its name; otherwise use the first container
-                    let container = self.selected_container_name()
+                    let container = self
+                        .selected_container_name()
                         .or_else(|| pod.containers.first().cloned());
                     let rendered = custom_cmd.render(
                         &pod.namespace,
@@ -1186,9 +1201,9 @@ impl App {
             })
             .collect();
         // Clean up expanded_pods for pods that no longer exist
-        let current_pod_names: HashSet<String> =
-            self.pods.iter().map(|p| p.name.clone()).collect();
-        self.expanded_pods.retain(|name| current_pod_names.contains(name));
+        let current_pod_names: HashSet<String> = self.pods.iter().map(|p| p.name.clone()).collect();
+        self.expanded_pods
+            .retain(|name| current_pod_names.contains(name));
         // Clamp selected_index to the new table row count
         let total_rows = self.table_rows().len();
         self.selected_index = self.selected_index.min(total_rows.saturating_sub(1));

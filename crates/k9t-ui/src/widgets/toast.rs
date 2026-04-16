@@ -1,7 +1,7 @@
 use ratatui::{
+    Frame,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::theme::Theme;

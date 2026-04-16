@@ -7,18 +7,29 @@ use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 
 use k9t_app::{App, AppEvent, AsyncAction, Config, ConfirmContext, Mode, ShellCommand};
-use k9t_core::{create_client, delete_pod, discover_contexts, discover_namespaces, resolve_context_name, restart_deployment, PodReflector};
+use k9t_core::{
+    PodReflector, create_client, delete_pod, discover_contexts, discover_namespaces,
+    resolve_context_name, restart_deployment,
+};
 use k9t_ui::layout::AppLayout;
 use k9t_ui::layout::is_terminal_too_small;
 use k9t_ui::theme::Theme;
 use k9t_ui::widgets::{
-    command_palette, confirm_dialog, container_picker, context_picker, footer, header, namespace_bar,
-    namespace_picker, resource_table, toast,
+    command_palette, confirm_dialog, container_picker, context_picker, footer, header,
+    namespace_bar, namespace_picker, resource_table, toast,
 };
 
 /// Fullscreen overlay modes that replace the entire view.
 fn is_fullscreen_overlay(mode: &Mode) -> bool {
-    matches!(mode, Mode::Help | Mode::NamespacePicker | Mode::ContextPicker | Mode::ContainerPicker(_) | Mode::ConfirmAction(_) | Mode::SetImageInput)
+    matches!(
+        mode,
+        Mode::Help
+            | Mode::NamespacePicker
+            | Mode::ContextPicker
+            | Mode::ContainerPicker(_)
+            | Mode::ConfirmAction(_)
+            | Mode::SetImageInput
+    )
 }
 
 #[derive(Parser)]
@@ -58,7 +69,9 @@ fn print_pipeline(parts: &[&str]) {
 /// For non-interactive commands (describe, yaml, delete), pipes output through `less -RFX`
 /// so the user can scroll and the output doesn't flash away.
 /// Returns a re-initialized terminal.
-fn run_subcommand(cmd: &ShellCommand) -> ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>> {
+fn run_subcommand(
+    cmd: &ShellCommand,
+) -> ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>> {
     // Restore terminal to normal mode so the subprocess can use it
     ratatui::restore();
 
@@ -165,7 +178,9 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
                         .stdin(jq_proc.stdout.unwrap())
                         .spawn();
                     match less {
-                        Ok(mut less_proc) => { let _ = less_proc.wait(); }
+                        Ok(mut less_proc) => {
+                            let _ = less_proc.wait();
+                        }
                         Err(e) => {
                             eprintln!("\nk9t: failed to run 'less': {}", e);
                             eprintln!("Press Enter to return to k9t...");
@@ -187,7 +202,9 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
                 .spawn();
 
             match less {
-                Ok(mut less_proc) => { let _ = less_proc.wait(); }
+                Ok(mut less_proc) => {
+                    let _ = less_proc.wait();
+                }
                 Err(e) => {
                     eprintln!("\nk9t: failed to run 'less': {}", e);
                     eprintln!("Press Enter to return to k9t...");
@@ -197,14 +214,15 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
         }
     } else {
         // No less available — run command and pause after
-        let status = std::process::Command::new(program)
-            .args(args)
-            .status();
+        let status = std::process::Command::new(program).args(args).status();
 
         if let Ok(s) = status
             && !s.success()
         {
-            eprintln!("\nk9t: command exited with code: {}", s.code().unwrap_or(-1));
+            eprintln!(
+                "\nk9t: command exited with code: {}",
+                s.code().unwrap_or(-1)
+            );
         }
         eprintln!("\n--- Press Enter to return to k9t ---");
         let _ = std::io::stdin().read_line(&mut String::new());
@@ -214,9 +232,7 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
 /// Run a single command and return its exit code (if it ran at all).
 /// On failure to spawn, prints an error and waits for Enter.
 fn run_single_command(program: &str, args: &[String]) -> Option<i32> {
-    let status = std::process::Command::new(program)
-        .args(args)
-        .status();
+    let status = std::process::Command::new(program).args(args).status();
 
     match status {
         Ok(s) => {
@@ -359,7 +375,9 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => {
                     let msg = match &action {
-                        AsyncAction::KillPod { name, .. } => format!("Failed to delete {}: {}", name, e),
+                        AsyncAction::KillPod { name, .. } => {
+                            format!("Failed to delete {}: {}", name, e)
+                        }
                         AsyncAction::RestartDeployment { name, .. } => {
                             format!("Failed to restart {}: {}", name, e)
                         }
@@ -376,9 +394,14 @@ async fn main() -> Result<()> {
                     client = new_client.clone();
                     reflector = PodReflector::start(client.clone())?;
                     app.apply_context_switch(new_context.clone());
-                    let available_namespaces = discover_namespaces(&client).await.unwrap_or_default();
+                    let available_namespaces =
+                        discover_namespaces(&client).await.unwrap_or_default();
                     app.set_available_namespaces(available_namespaces);
-                    app.show_toast(format!("Switched to context {}", new_context), k9t_app::ToastType::Success, 6);
+                    app.show_toast(
+                        format!("Switched to context {}", new_context),
+                        k9t_app::ToastType::Success,
+                        6,
+                    );
                 }
                 Err(e) => {
                     app.show_toast(
@@ -465,7 +488,9 @@ async fn main() -> Result<()> {
                     let search_spans = ratatui::text::Line::from(vec![
                         ratatui::text::Span::styled(
                             "/",
-                            theme.accent_primary().add_modifier(ratatui::style::Modifier::BOLD),
+                            theme
+                                .accent_primary()
+                                .add_modifier(ratatui::style::Modifier::BOLD),
                         ),
                         ratatui::text::Span::styled(input.to_string(), theme.fg_default()),
                         ratatui::text::Span::styled("█", theme.accent_primary()),
@@ -486,32 +511,34 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     command_palette::render_command_palette(
-                        frame,
-                        area,
-                        query,
-                        &items,
-                        *index,
-                        &theme,
+                        frame, area, query, &items, *index, &theme,
                     );
                 }
                 _ => {
                     // Show contextual hints based on mode
                     let context_hints: &[(&str, &str)] = match &app.mode {
-                        Mode::ContainerPicker(_) => &[("Enter", "select"), ("j/k", "nav"), ("Esc", "cancel")],
-                        Mode::ContextPicker => &[("Enter", "select"), ("j/k", "nav"), ("Esc", "cancel")],
-                        Mode::SetImageInput => &[("Enter", "apply"), ("Esc", "cancel"), ("Ctrl+U", "clear")],
-                        Mode::Help => &[("Esc/?", "close")],
-                        _ => {
-                            &[("j/k", "nav"), ("Enter", "expand"), ("l", "logs"), ("s", "shell"), ("i", "image"), ("K", "kill"), ("R", "restart"), ("?", "help")]
+                        Mode::ContainerPicker(_) => {
+                            &[("Enter", "select"), ("j/k", "nav"), ("Esc", "cancel")]
                         }
+                        Mode::ContextPicker => {
+                            &[("Enter", "select"), ("j/k", "nav"), ("Esc", "cancel")]
+                        }
+                        Mode::SetImageInput => {
+                            &[("Enter", "apply"), ("Esc", "cancel"), ("Ctrl+U", "clear")]
+                        }
+                        Mode::Help => &[("Esc/?", "close")],
+                        _ => &[
+                            ("j/k", "nav"),
+                            ("Enter", "expand"),
+                            ("l", "logs"),
+                            ("s", "shell"),
+                            ("i", "image"),
+                            ("K", "kill"),
+                            ("R", "restart"),
+                            ("?", "help"),
+                        ],
                     };
-                    footer::render_footer(
-                        frame,
-                        layout.footer,
-                        mode_name,
-                        context_hints,
-                        &theme,
-                    );
+                    footer::render_footer(frame, layout.footer, mode_name, context_hints, &theme);
                 }
             }
 
@@ -604,7 +631,10 @@ async fn main() -> Result<()> {
                     frame.render_widget(prompt, area);
 
                     let hint = " [Enter]apply  [Esc]cancel  [Ctrl+U]clear";
-                    let hint_line = ratatui::text::Line::from(ratatui::text::Span::styled(hint, theme.fg_muted()));
+                    let hint_line = ratatui::text::Line::from(ratatui::text::Span::styled(
+                        hint,
+                        theme.fg_muted(),
+                    ));
                     let hint_area = ratatui::layout::Rect::new(
                         area.x,
                         area.y + area.height.saturating_sub(2),
@@ -620,17 +650,28 @@ async fn main() -> Result<()> {
                     let dim = theme.fg_muted();
                     let emphasis = theme.fg_emphasis();
                     let title = theme.title_style();
-                    let accent = theme.accent_primary().add_modifier(ratatui::style::Modifier::BOLD);
+                    let accent = theme
+                        .accent_primary()
+                        .add_modifier(ratatui::style::Modifier::BOLD);
                     let cmd_style = theme.status_success();
 
                     // Build help lines dynamically to include custom commands
                     let mut help_lines: Vec<ratatui::text::Line> = vec![
                         ratatui::text::Line::from(""),
-                        ratatui::text::Line::from(ratatui::text::Span::styled(" k9t — Kubernetes Terminal UI", accent)),
-                        ratatui::text::Line::from(ratatui::text::Span::styled("   (k9s-compatible keybindings)", dim)),
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            " k9t — Kubernetes Terminal UI",
+                            accent,
+                        )),
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            "   (k9s-compatible keybindings)",
+                            dim,
+                        )),
                         ratatui::text::Line::from(""),
                         // ── Navigation ──
-                        ratatui::text::Line::from(ratatui::text::Span::styled(" Navigation", title)),
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            " Navigation",
+                            title,
+                        )),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   j/k  ↑/↓     ", emphasis),
                             ratatui::text::Span::styled("Move selection", dim),
@@ -650,7 +691,10 @@ async fn main() -> Result<()> {
                         ratatui::text::Line::from(""),
                         // ── Actions ──
                         ratatui::text::Line::from(ratatui::text::Span::styled(" Actions", title)),
-                        ratatui::text::Line::from(ratatui::text::Span::styled("   (on container row: targets that container)", dim)),
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            "   (on container row: targets that container)",
+                            dim,
+                        )),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   l             ", emphasis),
                             ratatui::text::Span::styled("View logs (kubectl logs -f)", dim),
@@ -673,26 +717,48 @@ async fn main() -> Result<()> {
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   i             ", emphasis),
-                            ratatui::text::Span::styled("Set container image (kubectl set image)", dim),
+                            ratatui::text::Span::styled(
+                                "Set container image (kubectl set image)",
+                                dim,
+                            ),
                         ]),
                         ratatui::text::Line::from(vec![
-                            ratatui::text::Span::styled("   K             ", theme.status_error().add_modifier(ratatui::style::Modifier::BOLD)),
+                            ratatui::text::Span::styled(
+                                "   K             ",
+                                theme
+                                    .status_error()
+                                    .add_modifier(ratatui::style::Modifier::BOLD),
+                            ),
                             ratatui::text::Span::styled("Kill pod (with confirmation)", dim),
                         ]),
                         ratatui::text::Line::from(vec![
-                            ratatui::text::Span::styled("   R             ", theme.status_warning().add_modifier(ratatui::style::Modifier::BOLD)),
-                            ratatui::text::Span::styled("Restart deployment (with confirmation)", dim),
+                            ratatui::text::Span::styled(
+                                "   R             ",
+                                theme
+                                    .status_warning()
+                                    .add_modifier(ratatui::style::Modifier::BOLD),
+                            ),
+                            ratatui::text::Span::styled(
+                                "Restart deployment (with confirmation)",
+                                dim,
+                            ),
                         ]),
                         ratatui::text::Line::from(""),
                         // ── Search / Filter ──
-                        ratatui::text::Line::from(ratatui::text::Span::styled(" Search / Filter", title)),
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            " Search / Filter",
+                            title,
+                        )),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   /             ", emphasis),
                             ratatui::text::Span::styled("Start search / filter", dim),
                         ]),
                         ratatui::text::Line::from(""),
                         // ── Command Mode ──
-                        ratatui::text::Line::from(ratatui::text::Span::styled(" Command Mode   (press : to enter)", title)),
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            " Command Mode   (press : to enter)",
+                            title,
+                        )),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   :q  :quit      ", cmd_style),
                             ratatui::text::Span::styled("Quit k9t", dim),
@@ -726,7 +792,9 @@ async fn main() -> Result<()> {
 
                     help_lines.push(ratatui::text::Line::from(""));
                     // ── UI ──
-                    help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(" UI", title)));
+                    help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                        " UI", title,
+                    )));
                     help_lines.push(ratatui::text::Line::from(vec![
                         ratatui::text::Span::styled("   n             ", emphasis),
                         ratatui::text::Span::styled("Open namespace picker", dim),
@@ -744,10 +812,13 @@ async fn main() -> Result<()> {
                         ratatui::text::Span::styled("Quit k9t", dim),
                     ]));
                     help_lines.push(ratatui::text::Line::from(""));
-                    help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(" Press ? or Esc to close this help", dim)));
+                    help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                        " Press ? or Esc to close this help",
+                        dim,
+                    )));
 
-                    let help_widget = ratatui::widgets::Paragraph::new(help_lines)
-                        .style(theme.bg_surface());
+                    let help_widget =
+                        ratatui::widgets::Paragraph::new(help_lines).style(theme.bg_surface());
                     frame.render_widget(help_widget, frame.area());
                 }
                 _ => {}
