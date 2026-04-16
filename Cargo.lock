@@ -1159,6 +1159,7 @@ dependencies = [
  "k9t-app",
  "k9t-core",
  "k9t-ui",
+ "libc",
  "ratatui",
  "regex",
  "tokio",

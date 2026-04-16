@@ -65,6 +65,37 @@ fn print_pipeline(parts: &[&str]) {
     eprintln!("\x1b[2m→ {}\x1b[0m", parts.join(" | "));
 }
 
+/// Ignore SIGINT in k9t so that Ctrl-C during a subprocess only kills the child,
+/// not k9t itself. Returns the previous handler so it can be restored.
+fn ignore_sigint() {
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+    }
+}
+
+/// Restore default SIGINT handling after a subprocess finishes.
+fn restore_sigint() {
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+    }
+}
+
+/// Trait to add `pre_exec_restore_sigint()` to `Command`.
+/// Sets SIG_DFL for SIGINT in the child before exec, undoing k9t's SIG_IGN
+/// so the child still responds to Ctrl-C.
+trait PreExecSigint: std::os::unix::process::CommandExt {
+    fn pre_exec_restore_sigint(&mut self) -> &mut Self {
+        unsafe {
+            self.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        self
+    }
+}
+impl PreExecSigint for std::process::Command {}
+
 /// Suspend the TUI, run a kubectl subcommand (shell, edit, yaml view), then resume the TUI.
 /// For shell exec commands, automatically retries fallback shells if exit code is 126
 /// (shell not found in container).
@@ -76,6 +107,10 @@ fn run_subcommand(
 ) -> ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>> {
     // Restore terminal to normal mode so the subprocess can use it
     ratatui::restore();
+
+    // Ignore SIGINT in k9t so Ctrl-C only kills the child process.
+    // The child restores SIG_DFL via pre_exec so it still responds to Ctrl-C.
+    ignore_sigint();
 
     if cmd.needs_pause {
         // Non-interactive command: pipe through less -RFX
@@ -99,8 +134,11 @@ fn run_subcommand(
         }
     }
 
+    // Restore SIGINT handling now that the subprocess is done.
+    restore_sigint();
+
     // Drain any leftover Ctrl-C key events that leaked from the subprocess.
-    // Without this, the Ctrl-C that killed `kubectl logs -f` would also quit k9t.
+    // With the SIG_IGN approach this is a belt-and-suspenders, but kept for safety.
     drain_ctrl_c_events();
 
     // Re-initialize the terminal for TUI rendering
@@ -117,10 +155,26 @@ fn command_exists(name: &str) -> bool {
         .is_ok()
 }
 
+/// Kill and wait on all remaining child processes to prevent zombies.
+fn reap_children(children: &mut Vec<std::process::Child>) {
+    for child in children.iter_mut() {
+        // Try to kill first; if the child already exited, kill returns an error we ignore.
+        let _ = child.kill();
+    }
+    for child in children.iter_mut() {
+        // Wait to reap each child so it doesn't become a zombie.
+        let _ = child.wait();
+    }
+    children.clear();
+}
+
 /// Run a command and pipe its output through `less -RFX` for paging.
 /// When `jq_filter` is set, pipes through `jq` for JSON log pretty-printing,
 /// then optionally through `bat --style=plain` for syntax coloring if available.
 /// Falls back to plain `less` if neither is available.
+///
+/// All spawned children are tracked. After `less` exits, any remaining children
+/// are killed and reaped to prevent zombies or orphan output.
 fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
     let less_available = command_exists("less");
     let use_jq = jq_filter.is_some() && command_exists("jq");
@@ -150,11 +204,15 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
     }
 
     if less_available {
+        // Track all children so we can kill and reap them after less exits.
+        let mut children: Vec<std::process::Child> = Vec::new();
+
         // Spawn kubectl with piped stdout
-        let kubectl = match std::process::Command::new(program)
+        let mut kubectl = match std::process::Command::new(program)
             .args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .pre_exec_restore_sigint()
             .spawn()
         {
             Ok(child) => child,
@@ -166,129 +224,115 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
             }
         };
 
-        let kubectl_stdout = kubectl.stdout.unwrap();
+        let kubectl_stdout = kubectl.stdout.take().unwrap();
+        children.push(kubectl);
 
-        // Pipeline: kubectl → [jq] → [bat] → less
-        if let Some(filter) = jq_filter.filter(|_| use_jq) {
+        // Build the pipeline and collect the stdin for `less`
+        let less_stdin = if let Some(filter) = jq_filter.filter(|_| use_jq) {
             // kubectl → jq → [bat] → less
-            let jq = std::process::Command::new("jq")
+            let mut jq = match std::process::Command::new("jq")
                 .arg("--unbuffered")
                 .arg("-Rr")
                 .arg(filter)
                 .stdin(kubectl_stdout)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
-                .spawn();
-
-            match jq {
-                Ok(jq_proc) => {
-                    let jq_stdout = jq_proc.stdout.unwrap();
-                    if use_bat {
-                        let bat = std::process::Command::new("bat")
-                            .arg("--style=plain")
-                            .arg("--language")
-                            .arg("json")
-                            .stdin(jq_stdout)
-                            .stdout(std::process::Stdio::piped())
-                            .spawn();
-                        match bat {
-                            Ok(bat_proc) => {
-                                let less = std::process::Command::new("less")
-                                    .arg("-RFX")
-                                    .stdin(bat_proc.stdout.unwrap())
-                                    .spawn();
-                                match less {
-                                    Ok(mut less_proc) => {
-                                        let _ = less_proc.wait();
-                                    }
-                                    Err(e) => {
-                                        eprintln!("\nk9t: failed to run 'less': {}", e);
-                                        eprintln!("Press Enter to return to k9t...");
-                                        let _ = std::io::stdin().read_line(&mut String::new());
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("\nk9t: failed to run 'bat': {}", e);
-                                eprintln!("Press Enter to return to k9t...");
-                                let _ = std::io::stdin().read_line(&mut String::new());
-                            }
-                        }
-                    } else {
-                        let less = std::process::Command::new("less")
-                            .arg("-RFX")
-                            .stdin(jq_stdout)
-                            .spawn();
-                        match less {
-                            Ok(mut less_proc) => {
-                                let _ = less_proc.wait();
-                            }
-                            Err(e) => {
-                                eprintln!("\nk9t: failed to run 'less': {}", e);
-                                eprintln!("Press Enter to return to k9t...");
-                                let _ = std::io::stdin().read_line(&mut String::new());
-                            }
-                        }
-                    }
-                }
+                .pre_exec_restore_sigint()
+                .spawn()
+            {
+                Ok(c) => c,
                 Err(e) => {
                     eprintln!("\nk9t: failed to run 'jq': {}", e);
                     eprintln!("Press Enter to return to k9t...");
                     let _ = std::io::stdin().read_line(&mut String::new());
+                    reap_children(&mut children);
+                    return;
                 }
+            };
+            let jq_stdout = jq.stdout.take().unwrap();
+            children.push(jq);
+
+            if use_bat {
+                let mut bat = match std::process::Command::new("bat")
+                    .arg("--style=plain")
+                    .arg("--language")
+                    .arg("json")
+                    .stdin(jq_stdout)
+                    .stdout(std::process::Stdio::piped())
+                    .pre_exec_restore_sigint()
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("\nk9t: failed to run 'bat': {}", e);
+                        eprintln!("Press Enter to return to k9t...");
+                        let _ = std::io::stdin().read_line(&mut String::new());
+                        reap_children(&mut children);
+                        return;
+                    }
+                };
+                let bat_stdout = bat.stdout.take().unwrap();
+                children.push(bat);
+                bat_stdout
+            } else {
+                jq_stdout
             }
         } else if use_bat {
-            // kubectl → bat → less (no jq, use bat for syntax coloring)
-            let bat = std::process::Command::new("bat")
+            // kubectl → bat → less
+            let mut bat = match std::process::Command::new("bat")
                 .arg("--style=plain")
                 .stdin(kubectl_stdout)
                 .stdout(std::process::Stdio::piped())
-                .spawn();
-
-            match bat {
-                Ok(bat_proc) => {
-                    let less = std::process::Command::new("less")
-                        .arg("-RFX")
-                        .stdin(bat_proc.stdout.unwrap())
-                        .spawn();
-                    match less {
-                        Ok(mut less_proc) => {
-                            let _ = less_proc.wait();
-                        }
-                        Err(e) => {
-                            eprintln!("\nk9t: failed to run 'less': {}", e);
-                            eprintln!("Press Enter to return to k9t...");
-                            let _ = std::io::stdin().read_line(&mut String::new());
-                        }
-                    }
-                }
+                .pre_exec_restore_sigint()
+                .spawn()
+            {
+                Ok(c) => c,
                 Err(e) => {
                     eprintln!("\nk9t: failed to run 'bat': {}", e);
                     eprintln!("Press Enter to return to k9t...");
                     let _ = std::io::stdin().read_line(&mut String::new());
+                    reap_children(&mut children);
+                    return;
                 }
-            }
+            };
+            let bat_stdout = bat.stdout.take().unwrap();
+            children.push(bat);
+            bat_stdout
         } else {
             // kubectl → less (no jq, no bat)
-            let less = std::process::Command::new("less")
-                .arg("-RFX")
-                .stdin(kubectl_stdout)
-                .spawn();
+            kubectl_stdout
+        };
 
-            match less {
-                Ok(mut less_proc) => {
-                    let _ = less_proc.wait();
-                }
-                Err(e) => {
-                    eprintln!("\nk9t: failed to run 'less': {}", e);
-                    eprintln!("Press Enter to return to k9t...");
-                    let _ = std::io::stdin().read_line(&mut String::new());
-                }
+        // Spawn less as the final stage
+        let mut less = match std::process::Command::new("less")
+            .arg("-RFX")
+            .stdin(less_stdin)
+            .pre_exec_restore_sigint()
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("\nk9t: failed to run 'less': {}", e);
+                eprintln!("Press Enter to return to k9t...");
+                let _ = std::io::stdin().read_line(&mut String::new());
+                reap_children(&mut children);
+                return;
             }
-        }
+        };
+
+        // Wait for less to finish (user presses q or reaches end of input)
+        let _ = less.wait();
+
+        // Kill and reap any remaining children in the pipeline.
+        // When less exits, its stdin pipe breaks, which should send SIGPIPE
+        // to upstream processes, but some may linger. Forcefully clean up.
+        reap_children(&mut children);
     } else {
         // No less available — run command and pause after
-        let status = std::process::Command::new(program).args(args).status();
+        let status = std::process::Command::new(program)
+            .args(args)
+            .pre_exec_restore_sigint()
+            .status();
 
         if let Ok(s) = status
             && !s.success()
@@ -305,8 +349,15 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
 
 /// Run a single command and return its exit code (if it ran at all).
 /// On failure to spawn, prints an error and waits for Enter.
+///
+/// The caller should call `ignore_sigint()` before calling this (and
+/// `restore_sigint()` after) so that Ctrl-C only kills the child, not k9t.
+/// We use `pre_exec` to restore SIG_DFL in the child so it still responds to Ctrl-C.
 fn run_single_command(program: &str, args: &[String]) -> Option<i32> {
-    let status = std::process::Command::new(program).args(args).status();
+    let status = std::process::Command::new(program)
+        .args(args)
+        .pre_exec_restore_sigint()
+        .status();
 
     match status {
         Ok(s) => {
