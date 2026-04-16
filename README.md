@@ -31,15 +31,16 @@ Think of it as the essential 20% of `k9s`, built in Rust.
 
 ## Features
 
-- **Live pod list** — watched via Kubernetes reflector, updates in real time
-- **Smart logs** — `l` tails logs through `less`; JSON lines auto-pretty-printed with `jq`
-- **Shell into pods** — `s` exec with automatic `/bin/bash` → `/bin/sh` → `sh` fallback
+- **Live pod list** — watched via Kubernetes reflector, updates in real time, sortable by namespace/name/age/status
+- **Smart logs** — `l` tails logs through `less`; JSON lines auto-pretty-printed with `jq` + `bat`
+- **Shell into pods** — `s` exec with automatic `sh` → `/bin/sh` → `/bin/bash` fallback
 - **Describe & YAML** — `d` and `y`, paged through `less`
 - **Kill & restart** — `K` and `R` with confirmation dialogs
-- **Set container image** — `i` to change a container image in-place
-- **Filter pods** — `/` to search by name or namespace
+- **Set container image** — `i` to change a container image in-place (dialog input)
+- **Port forward** — `f` to set up port forwarding for a pod/container
+- **Filter pods** — `/` to filter pods by name, namespace, or container name
 - **Regex filters** — `--regex-namespace-pods "plt/api-.*"` from CLI
-- **Multi-namespace** — `n` to pick namespaces; `a` to select all
+- **Multi-namespace** — `n` to pick namespaces; `a` to select all; Enter to apply, Esc to cancel
 - **Hot context switching** — `x` to switch kube context without restarting
 - **Command palette** — `:` to run built-in and custom commands with fuzzy search
 - **6 color themes** — Tokyo Night, Nord, Dracula, Gruvbox, Catppuccin Mocha, Light + Monochrome (with `NO_COLOR=1`)
@@ -55,6 +56,11 @@ Think of it as the essential 20% of `k9s`, built in Rust.
 brew tap helloworldsg/tap
 brew install k9t
 ```
+
+k9t uses `less` for paging output. For enhanced features, install these optional tools:
+
+- **jq** — JSON log pretty-printing (`brew install jq`)
+- **bat** — Syntax highlighting for YAML/describe output (`brew install bat`)
 
 ### Pre-built binaries
 
@@ -118,11 +124,13 @@ k9t --all-namespaces
    d              Describe pod (kubectl describe)
    y              View YAML (kubectl get -o yaml)
    i              Set container image (kubectl set image)
+   f              Port forward (kubectl port-forward)
    K              Kill pod (with confirmation)
    R              Restart deployment (with confirmation)
 
- Search / Filter
+ Search / Filter / Sort
    /              Start search / filter
+   ,              Cycle sort order (ns/name/age/status)
 
  Command Mode  (press : to enter)
    :q  :quit     Quit k9t
@@ -164,7 +172,19 @@ k9t loads config from the first file found (in order):
       "command": "kubectl logs -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | jq .",
       "description": "Pretty-print JSON logs"
     }
-  ]
+  ],
+  "overrides": {
+    "logs": {
+      "command": "stern {{NAMESPACE}}/{{POD}} --context {{CONTEXT}} -c {{CONTAINER}}",
+      "needs_pause": false
+    },
+    "shell": {
+      "command": "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- /bin/bash"
+    },
+    "port-forward": {
+      "command": "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}"
+    }
+  }
 }
 ```
 
@@ -176,6 +196,27 @@ k9t loads config from the first file found (in order):
 | `match_pattern` | `namespace/pod_regex` filter. Omit to match all pods. |
 | `command` | Shell template with `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}` |
 | `description` | Short help text shown in the command palette |
+
+### Command overrides
+
+Override any built-in command with a custom shell template. Each override replaces the default `kubectl` invocation for that action.
+
+| Key | Default command | Template variables |
+|---|---|---|
+| `logs` | `kubectl logs -f` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}` |
+| `previous_logs` | `kubectl logs --previous` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}` |
+| `shell` | `kubectl exec -it` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}` |
+| `describe` | `kubectl describe` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTEXT}}` |
+| `yaml` | `kubectl get -o yaml` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTEXT}}` |
+| `set_image` | `kubectl set image` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`, `{{IMAGE}}` |
+| `port_forward` | `kubectl port-forward` | `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`, `{{PORTS}}` |
+
+Each override has two fields:
+
+- **`command`** (required) — Shell command template. If the command contains spaces, it's split into program + args automatically (supports basic quoting).
+- **`needs_pause`** (optional) — Whether to pipe output through `less -RFX`. Defaults vary by command: `logs`, `describe`, `yaml`, and `set_image` default to `true`; `shell` and `port_forward` default to `false`.
+
+For `previous_logs`, if not set, the `logs` override (if any) is used as fallback.
 
 ## Architecture
 

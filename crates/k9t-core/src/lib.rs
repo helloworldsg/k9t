@@ -17,6 +17,7 @@ pub use port_forward::PortForward;
 pub use reflector::K9sReflector;
 pub use reflector::PodReflector;
 pub use resource::{
-    ContainerDetail, DeploymentInfo, EventInfo, NodeInfo, PodInfo, ResourceType, ServiceInfo,
+    ContainerDetail, ContainerPortInfo, DeploymentInfo, EventInfo, NodeInfo, PodInfo, ResourceType,
+    ServiceInfo,
 };
 pub use shell::ShellSession;

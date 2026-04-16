@@ -1,5 +1,6 @@
 pub mod command_palette;
 pub mod confirm_dialog;
+pub mod container_actions;
 pub mod container_picker;
 pub mod context_picker;
 pub mod footer;

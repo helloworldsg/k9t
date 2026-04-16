@@ -1,13 +1,27 @@
 use std::collections::HashSet;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 
 use k9t_core::{ContainerDetail, PodInfo};
 
 use crate::command::{Command, CommandItem};
-use crate::config::CustomCommand;
+use crate::config::{CommandOverrides, CustomCommand};
 use crate::event::AppEvent;
-use crate::mode::{ConfirmContext, ContainerPickerIntent, Mode};
+use crate::mode::{ConfirmContext, ContainerAction, ContainerPickerIntent, Mode};
+
+/// Sort configuration for the pod list.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SortConfig {
+    #[default]
+    NamespaceAsc,
+    NamespaceDesc,
+    NameAsc,
+    NameDesc,
+    AgeAsc,
+    AgeDesc,
+    StatusAsc,
+    StatusDesc,
+}
 
 /// A flattened table row for the pod list view.
 /// Pods appear as top-level rows; containers appear as indented sub-rows
@@ -134,6 +148,24 @@ pub struct App {
     pub set_image_container: String,
     /// Set of pod names that are currently expanded (showing containers).
     pub expanded_pods: HashSet<String>,
+    /// Staging buffer for namespace picker — changes are applied on Enter, discarded on Esc.
+    pub staged_namespaces: Option<HashSet<String>>,
+    /// Buffer for port-forward input mode.
+    pub port_forward_buffer: String,
+    /// Namespace of the pod for port-forward.
+    pub port_forward_namespace: String,
+    /// Pod name for port-forward.
+    pub port_forward_pod: String,
+    /// Container name for port-forward (if specific container needed).
+    pub port_forward_container: Option<String>,
+    /// Current sort configuration for the pod list.
+    pub sort_config: SortConfig,
+    /// Actions list for the container actions dialog.
+    pub container_actions: Vec<ContainerAction>,
+    /// Selected index in the container actions dialog.
+    pub container_actions_index: usize,
+    /// Command overrides from config (logs, shell, describe, etc.).
+    pub overrides: CommandOverrides,
 }
 
 /// A kubectl subcommand to run outside the TUI (suspend/resume pattern).
@@ -153,6 +185,21 @@ pub struct ShellCommand {
 }
 
 impl ShellCommand {
+    /// Parse a command template string (after variable substitution) into a ShellCommand.
+    /// This splits the string into program + args using shell-like word splitting.
+    fn from_template(template: &str, needs_pause: bool) -> Self {
+        let (program, args) = split_shell_command(template);
+        Self {
+            program,
+            args,
+            fallback_commands: vec![],
+            needs_pause,
+            jq_filter: None,
+        }
+    }
+}
+
+impl ShellCommand {
     /// Build `kubectl exec -it` commands for shelling into a pod.
     /// Tries multiple shell binaries in order: /bin/bash, /bin/sh, sh.
     /// Returns the primary command with fallbacks populated.
@@ -163,8 +210,9 @@ impl ShellCommand {
         context: Option<&str>,
         container: Option<&str>,
     ) -> Self {
-        // Shell binaries to try in order (k9s-style fallback)
-        let shells = ["/bin/bash", "/bin/sh", "sh"];
+        // Shell binaries to try in order — start with the most universal
+        // (sh is available everywhere, /bin/bash only on full distros)
+        let shells = ["sh", "/bin/sh", "/bin/bash"];
 
         let mut commands: Vec<ShellCommand> = shells
             .iter()
@@ -318,12 +366,13 @@ impl ShellCommand {
 
 impl App {
     pub fn new(context_name: Option<String>) -> Self {
-        Self::with_commands(context_name, Vec::new())
+        Self::with_commands(context_name, Vec::new(), CommandOverrides::default())
     }
 
     pub fn with_commands(
         context_name: Option<String>,
         custom_commands: Vec<CustomCommand>,
+        overrides: CommandOverrides,
     ) -> Self {
         Self {
             mode: Mode::Normal,
@@ -363,14 +412,212 @@ impl App {
             set_image_pod: String::new(),
             set_image_container: String::new(),
             expanded_pods: HashSet::new(),
+            staged_namespaces: None,
+            port_forward_buffer: String::new(),
+            port_forward_namespace: String::new(),
+            port_forward_pod: String::new(),
+            port_forward_container: None,
+            sort_config: SortConfig::default(),
+            container_actions: Vec::new(),
+            container_actions_index: 0,
+            overrides,
+        }
+    }
+
+    // ── Command override helpers ──
+    // Each method checks if a config override exists; if so, renders the template.
+    // Otherwise falls back to the built-in kubectl command.
+
+    /// Build a logs command, checking for override first.
+    /// When `previous=true`, checks `overrides.previous_logs` first, then falls back
+    /// to `overrides.logs`, and finally the built-in kubectl command.
+    pub fn build_logs_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+        previous: bool,
+    ) -> ShellCommand {
+        // For previous-logs, check previous_logs override first
+        if previous {
+            if let Some(ref override_cmd) = self.overrides.previous_logs {
+                let rendered = override_cmd.render(
+                    namespace,
+                    pod_name,
+                    container,
+                    self.context_name.as_deref(),
+                );
+                let needs_pause = override_cmd.needs_pause.unwrap_or(true);
+                let mut cmd = ShellCommand::from_template(&rendered, needs_pause);
+                if !needs_pause {
+                    cmd.jq_filter = Some(". as $line | try (fromjson | .) catch $line".to_string());
+                }
+                return cmd;
+            }
+        }
+        // Then check the generic logs override
+        if let Some(ref override_cmd) = self.overrides.logs {
+            let rendered =
+                override_cmd.render(namespace, pod_name, container, self.context_name.as_deref());
+            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
+            let mut cmd = ShellCommand::from_template(&rendered, needs_pause);
+            if !needs_pause {
+                cmd.jq_filter = Some(". as $line | try (fromjson | .) catch $line".to_string());
+            }
+            return cmd;
+        }
+        ShellCommand::kubectl_logs(
+            namespace,
+            pod_name,
+            self.context_name.as_deref(),
+            container,
+            previous,
+        )
+    }
+
+    /// Build a shell (exec) command, checking for override first.
+    pub fn build_shell_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        if let Some(ref override_cmd) = self.overrides.shell {
+            let rendered =
+                override_cmd.render(namespace, pod_name, container, self.context_name.as_deref());
+            let needs_pause = override_cmd.needs_pause.unwrap_or(false);
+            return ShellCommand::from_template(&rendered, needs_pause);
+        }
+        ShellCommand::kubectl_exec(namespace, pod_name, self.context_name.as_deref(), container)
+    }
+
+    /// Build a describe command, checking for override first.
+    pub fn build_describe_cmd(
+        &self,
+        resource_type: &str,
+        namespace: &str,
+        name: &str,
+    ) -> ShellCommand {
+        if let Some(ref override_cmd) = self.overrides.describe {
+            let rendered = override_cmd.render(namespace, name, None, self.context_name.as_deref());
+            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
+            return ShellCommand::from_template(&rendered, needs_pause);
+        }
+        ShellCommand::kubectl_describe(resource_type, namespace, name, self.context_name.as_deref())
+    }
+
+    /// Build a yaml command, checking for override first.
+    pub fn build_yaml_cmd(&self, resource_type: &str, namespace: &str, name: &str) -> ShellCommand {
+        if let Some(ref override_cmd) = self.overrides.yaml {
+            let rendered = override_cmd.render(namespace, name, None, self.context_name.as_deref());
+            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
+            return ShellCommand::from_template(&rendered, needs_pause);
+        }
+        ShellCommand::kubectl_yaml(resource_type, namespace, name, self.context_name.as_deref())
+    }
+
+    /// Build a set-image command, checking for override first.
+    pub fn build_set_image_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: &str,
+        image: &str,
+    ) -> ShellCommand {
+        if let Some(ref override_cmd) = self.overrides.set_image {
+            let mut rendered = override_cmd.render(
+                namespace,
+                pod_name,
+                Some(container),
+                self.context_name.as_deref(),
+            );
+            rendered = rendered.replace("{{IMAGE}}", image);
+            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
+            return ShellCommand::from_template(&rendered, needs_pause);
+        }
+        ShellCommand::kubectl_set_image(
+            namespace,
+            pod_name,
+            container,
+            image,
+            self.context_name.as_deref(),
+        )
+    }
+
+    /// Build a port-forward command, checking for override first.
+    /// `ports` is the raw user-typed port spec (e.g. "8080:80,9090:9090").
+    /// Template supports `{{LOCAL_PORT}}:{{REMOTE_PORT}}` or plain `{{NAMESPACE}}`, etc.
+    pub fn build_port_forward_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+        ports: &str,
+    ) -> ShellCommand {
+        if let Some(ref override_cmd) = self.overrides.port_forward {
+            let mut rendered =
+                override_cmd.render(namespace, pod_name, container, self.context_name.as_deref());
+            // Replace port template variables with the actual port spec
+            // The user may use {{PORTS}} as a placeholder for the entire port spec
+            rendered = rendered.replace("{{PORTS}}", ports);
+            let needs_pause = override_cmd.needs_pause.unwrap_or(false);
+            return ShellCommand::from_template(&rendered, needs_pause);
+        }
+        // Default kubectl port-forward command
+        let mut args = vec!["port-forward".to_string()];
+        if let Some(ctx) = self.context_name.as_deref() {
+            args.push(format!("--context={}", ctx));
+        }
+        args.push("-n".to_string());
+        args.push(namespace.to_string());
+        if let Some(c) = container {
+            args.push("-c".to_string());
+            args.push(c.to_string());
+        }
+        args.push(pod_name.to_string());
+        for port_spec in ports.split(',') {
+            let port_spec = port_spec.trim();
+            if !port_spec.is_empty() {
+                args.push(port_spec.to_string());
+            }
+        }
+        ShellCommand {
+            program: "kubectl".to_string(),
+            args,
+            fallback_commands: vec![],
+            needs_pause: false,
+            jq_filter: None,
         }
     }
 
     /// Build the flattened table rows (pods + expanded containers) from the current pod list.
     /// This is the view the table widget renders and the selection index navigates.
+    /// When a search filter is active, only matching pods (and their containers) are shown.
+    /// The filter persists after exiting search mode (Enter commits, Esc clears).
     pub fn table_rows(&self) -> Vec<TableRow> {
+        // Use search query from active search mode OR committed filter
+        let search_query = match &self.mode {
+            Mode::Search(q) if !q.is_empty() => Some(q.to_lowercase()),
+            _ => self.search_query.as_ref().map(|q| q.to_lowercase()),
+        };
+
         let mut rows = Vec::new();
         for (pod_index, pod) in self.pods.iter().enumerate() {
+            // Filter by search query
+            if let Some(ref query) = search_query {
+                let matches_pod = pod.name.to_lowercase().contains(query)
+                    || pod.namespace.to_lowercase().contains(query);
+                let matches_container = pod.container_details.iter().any(|c| {
+                    c.name.to_lowercase().contains(query)
+                        || c.status.to_lowercase().contains(query)
+                        || c.image.to_lowercase().contains(query)
+                });
+
+                if !matches_pod && !matches_container {
+                    continue; // Skip this pod entirely
+                }
+            }
+
             let expanded = self.expanded_pods.contains(&pod.name);
             rows.push(TableRow::Pod {
                 pod: pod.clone(),
@@ -379,6 +626,8 @@ impl App {
             if expanded {
                 let detail_count = pod.container_details.len();
                 for (ci, container) in pod.container_details.iter().enumerate() {
+                    // If search is active and only the pod matches, still show all containers
+                    // If only a container matches, only show that container's pod with it
                     rows.push(TableRow::Container {
                         pod_index,
                         container: container.clone(),
@@ -418,6 +667,30 @@ impl App {
         }
     }
 
+    /// Convenience: return the suggested port-forward string for the current selection.
+    /// Takes the first container port and formats it as "local:remote" (using the same port).
+    pub fn suggested_port_forward(&self) -> String {
+        let rows = self.table_rows();
+        match rows.get(self.selected_index) {
+            Some(TableRow::Container { container, .. }) => {
+                if let Some(port_info) = container.ports.first() {
+                    format!("{}:{}", port_info.port, port_info.port)
+                } else {
+                    String::new()
+                }
+            }
+            Some(TableRow::Pod { pod, .. }) => {
+                // For a pod row, look at the first container's first port
+                pod.container_details
+                    .first()
+                    .and_then(|c| c.ports.first())
+                    .map(|p| format!("{}:{}", p.port, p.port))
+                    .unwrap_or_default()
+            }
+            None => String::new(),
+        }
+    }
+
     pub fn update(&mut self, event: AppEvent) -> bool {
         match event {
             AppEvent::Tick => {
@@ -438,8 +711,60 @@ impl App {
                 }
                 self.handle_key(key);
             }
+            AppEvent::Mouse(mouse) => {
+                self.handle_mouse(mouse);
+            }
         }
         self.should_quit
+    }
+
+    /// Handle mouse events for click-to-select, click-to-activate, and scroll.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.selected_index = self.selected_index.saturating_sub(1);
+            }
+            MouseEventKind::ScrollDown => {
+                let total = self.table_rows().len();
+                self.selected_index = (self.selected_index + 1).min(total.saturating_sub(1));
+            }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // Click in the table area — select the row and potentially activate it
+                // The table starts after the header (2 rows) + namespace bar (1 row).
+                // We approximate: row 0 is header, row 1 is namespace bar,
+                // rows 2.. are the table content.
+                // The clicked row_index in the table is: (mouse.row - 2)
+                // We need to account for scroll offset.
+                // For simplicity, we map the click position to a table row.
+                // Header area = row 0, namespace bar = row 1, table starts at row 2.
+
+                // Check if click is in the table area (below header + namespace bar)
+                if mouse.row >= 2 {
+                    let clicked_row = (mouse.row - 2) as usize;
+                    let total_rows = self.table_rows().len();
+                    if clicked_row < total_rows {
+                        // If clicking the same row that's already selected, activate it
+                        if clicked_row == self.selected_index {
+                            let rows = self.table_rows();
+                            if let Some(row) = rows.get(clicked_row) {
+                                match row {
+                                    TableRow::Pod { .. } => {
+                                        self.toggle_expand_selected();
+                                    }
+                                    TableRow::Container { .. } => {
+                                        self.open_container_actions();
+                                    }
+                                }
+                            }
+                        } else {
+                            // Just select the row
+                            self.selected_index = clicked_row;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -451,8 +776,10 @@ impl App {
             Mode::Help => self.handle_help_key(key),
             Mode::NamespacePicker => self.handle_namespace_picker_key(key),
             Mode::ContextPicker => self.handle_context_picker_key(key),
+            Mode::ContainerActions => self.handle_container_actions_key(key),
             Mode::ContainerPicker(_) => self.handle_container_picker_key(key),
             Mode::SetImageInput => self.handle_set_image_key(key),
+            Mode::PortForwardInput => self.handle_port_forward_key(key),
         }
     }
 
@@ -485,15 +812,23 @@ impl App {
             }
             // ── Expand/Collapse (Enter) ──
             (KeyModifiers::NONE, KeyCode::Enter) => {
-                self.toggle_expand_selected();
+                // On pod row: expand/collapse. On container row: show action menu.
+                let rows = self.table_rows();
+                if let Some(row) = rows.get(self.selected_index) {
+                    match row {
+                        TableRow::Pod { .. } => {
+                            self.toggle_expand_selected();
+                        }
+                        TableRow::Container { .. } => {
+                            self.open_container_actions();
+                        }
+                    }
+                }
             }
             // ── Quit ──
             (KeyModifiers::NONE, KeyCode::Esc) => {
-                if self.search_active {
-                    self.search_active = false;
-                    self.search_buffer.clear();
-                    self.search_match_indices.clear();
-                } else {
+                if self.search_query.is_some() {
+                    // Clear committed search filter
                     self.search_query = None;
                 }
             }
@@ -503,7 +838,9 @@ impl App {
             }
             // ── Search / Filter (k9s: /) ──
             (KeyModifiers::NONE, KeyCode::Char('/')) => {
-                self.mode = Mode::Search(String::new());
+                // Start search with existing committed query so user can refine
+                let initial = self.search_query.clone().unwrap_or_default();
+                self.mode = Mode::Search(initial);
                 self.search_match_indices.clear();
             }
             // ── Command palette (k9s: :) ──
@@ -523,10 +860,9 @@ impl App {
                             ..
                         } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
-                                self.pending_shell = Some(ShellCommand::kubectl_logs(
+                                self.pending_shell = Some(self.build_logs_cmd(
                                     &pod.namespace,
                                     &pod.name,
-                                    self.context_name.as_deref(),
                                     Some(&container.name),
                                     false,
                                 ));
@@ -540,10 +876,9 @@ impl App {
                                     Mode::ContainerPicker(ContainerPickerIntent::Logs(false));
                             } else {
                                 let container = pod.containers.first().cloned();
-                                self.pending_shell = Some(ShellCommand::kubectl_logs(
+                                self.pending_shell = Some(self.build_logs_cmd(
                                     &pod.namespace,
                                     &pod.name,
-                                    self.context_name.as_deref(),
                                     container.as_deref(),
                                     false,
                                 ));
@@ -562,10 +897,9 @@ impl App {
                             ..
                         } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
-                                self.pending_shell = Some(ShellCommand::kubectl_logs(
+                                self.pending_shell = Some(self.build_logs_cmd(
                                     &pod.namespace,
                                     &pod.name,
-                                    self.context_name.as_deref(),
                                     Some(&container.name),
                                     true,
                                 ));
@@ -579,10 +913,9 @@ impl App {
                                     Mode::ContainerPicker(ContainerPickerIntent::Logs(true));
                             } else {
                                 let container = pod.containers.first().cloned();
-                                self.pending_shell = Some(ShellCommand::kubectl_logs(
+                                self.pending_shell = Some(self.build_logs_cmd(
                                     &pod.namespace,
                                     &pod.name,
-                                    self.context_name.as_deref(),
                                     container.as_deref(),
                                     true,
                                 ));
@@ -595,12 +928,8 @@ impl App {
             // Always describes the pod (even if container row selected)
             (KeyModifiers::NONE, KeyCode::Char('d')) => {
                 if let Some(pod) = self.selected_pod_cloned() {
-                    self.pending_shell = Some(ShellCommand::kubectl_describe(
-                        "pod",
-                        &pod.namespace,
-                        &pod.name,
-                        self.context_name.as_deref(),
-                    ));
+                    self.pending_shell =
+                        Some(self.build_describe_cmd("pod", &pod.namespace, &pod.name));
                 }
             }
             // ── Actions: Shell (k9s: s) → kubectl exec ──
@@ -613,10 +942,9 @@ impl App {
                             ..
                         } => {
                             if let Some(pod) = self.pods.get(*pod_index) {
-                                self.pending_shell = Some(ShellCommand::kubectl_exec(
+                                self.pending_shell = Some(self.build_shell_cmd(
                                     &pod.namespace,
                                     &pod.name,
-                                    self.context_name.as_deref(),
                                     Some(&container.name),
                                 ));
                             }
@@ -628,10 +956,9 @@ impl App {
                                 self.mode = Mode::ContainerPicker(ContainerPickerIntent::Shell);
                             } else {
                                 let container = pod.containers.first().cloned();
-                                self.pending_shell = Some(ShellCommand::kubectl_exec(
+                                self.pending_shell = Some(self.build_shell_cmd(
                                     &pod.namespace,
                                     &pod.name,
-                                    self.context_name.as_deref(),
                                     container.as_deref(),
                                 ));
                             }
@@ -643,12 +970,8 @@ impl App {
             // Always shows YAML for the pod
             (KeyModifiers::NONE, KeyCode::Char('y')) => {
                 if let Some(pod) = self.selected_pod_cloned() {
-                    self.pending_shell = Some(ShellCommand::kubectl_yaml(
-                        "pod",
-                        &pod.namespace,
-                        &pod.name,
-                        self.context_name.as_deref(),
-                    ));
+                    self.pending_shell =
+                        Some(self.build_yaml_cmd("pod", &pod.namespace, &pod.name));
                 }
             }
             // ── Actions: Set image (i) → select container, then type new image ──
@@ -685,6 +1008,41 @@ impl App {
                     }
                 }
             }
+            // ── Actions: Port forward (f) → kubectl port-forward ──
+            (KeyModifiers::NONE, KeyCode::Char('f')) => {
+                if let Some(row) = self.selected_row() {
+                    let suggested = self.suggested_port_forward();
+                    match &row {
+                        TableRow::Container {
+                            pod_index,
+                            container,
+                            ..
+                        } => {
+                            if let Some(pod) = self.pods.get(*pod_index) {
+                                self.port_forward_namespace = pod.namespace.clone();
+                                self.port_forward_pod = pod.name.clone();
+                                self.port_forward_container = Some(container.name.clone());
+                                self.port_forward_buffer = suggested;
+                                self.mode = Mode::PortForwardInput;
+                            }
+                        }
+                        TableRow::Pod { pod, .. } => {
+                            if pod.containers.len() > 1 {
+                                self.container_choices = pod.containers.clone();
+                                self.container_picker_index = 0;
+                                self.mode =
+                                    Mode::ContainerPicker(ContainerPickerIntent::PortForward);
+                            } else {
+                                self.port_forward_namespace = pod.namespace.clone();
+                                self.port_forward_pod = pod.name.clone();
+                                self.port_forward_container = pod.containers.first().cloned();
+                                self.port_forward_buffer = suggested;
+                                self.mode = Mode::PortForwardInput;
+                            }
+                        }
+                    }
+                }
+            }
             // ── Actions: Kill pod (Shift+K) → confirm then delete ──
             // Always kills the pod (even if container row selected)
             (KeyModifiers::SHIFT, KeyCode::Char('K')) => {
@@ -707,6 +1065,8 @@ impl App {
             }
             // ── Namespace picker ──
             (KeyModifiers::NONE, KeyCode::Char('n')) => {
+                // Stage current namespaces so changes can be applied on Enter or discarded on Esc
+                self.staged_namespaces = Some(self.selected_namespaces.clone());
                 self.mode = Mode::NamespacePicker;
                 self.namespace_picker_index = 0;
                 self.namespace_picker_search = String::new();
@@ -721,6 +1081,19 @@ impl App {
             (KeyModifiers::SHIFT, KeyCode::Char('T')) => {
                 self.theme_index = (self.theme_index + 1) % self.theme_count;
             }
+            // ── Sort cycle ──
+            (KeyModifiers::NONE, KeyCode::Char(',')) => {
+                self.sort_config = match self.sort_config {
+                    SortConfig::NamespaceAsc => SortConfig::NamespaceDesc,
+                    SortConfig::NamespaceDesc => SortConfig::NameAsc,
+                    SortConfig::NameAsc => SortConfig::NameDesc,
+                    SortConfig::NameDesc => SortConfig::AgeAsc,
+                    SortConfig::AgeAsc => SortConfig::AgeDesc,
+                    SortConfig::AgeDesc => SortConfig::StatusAsc,
+                    SortConfig::StatusAsc => SortConfig::StatusDesc,
+                    SortConfig::StatusDesc => SortConfig::NamespaceAsc,
+                };
+            }
             (KeyModifiers::NONE, KeyCode::Char('q')) => {
                 self.should_quit = true;
             }
@@ -730,6 +1103,186 @@ impl App {
 
     /// Toggle expand/collapse for the selected pod row.
     /// If a container row is selected, collapse its parent pod.
+    /// Open the container actions dialog for the currently selected container.
+    fn open_container_actions(&mut self) {
+        let rows = self.table_rows();
+        if let Some(TableRow::Container {
+            pod_index,
+            container: _,
+            ..
+        }) = rows.get(self.selected_index).cloned()
+        {
+            if let Some(pod) = self.pods.get(pod_index) {
+                let mut actions = vec![
+                    ContainerAction::Logs,
+                    ContainerAction::PreviousLogs,
+                    ContainerAction::Shell,
+                    ContainerAction::Describe,
+                    ContainerAction::Yaml,
+                    ContainerAction::SetImage,
+                    ContainerAction::PortForward,
+                ];
+                // Add matching custom commands
+                for cmd in &self.custom_commands {
+                    if cmd.matches(&pod.namespace, &pod.name) {
+                        actions.push(ContainerAction::Custom(cmd.clone()));
+                    }
+                }
+                self.container_actions = actions;
+                self.container_actions_index = 0;
+                self.mode = Mode::ContainerActions;
+            }
+        }
+    }
+
+    fn handle_container_actions_key(&mut self, key: KeyEvent) {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) => {
+                self.mode = Mode::Normal;
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
+                self.container_actions_index = (self.container_actions_index + 1)
+                    .min(self.container_actions.len().saturating_sub(1));
+            }
+            (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
+                self.container_actions_index = self.container_actions_index.saturating_sub(1);
+            }
+            // Shortcut keys for quick action selection
+            (KeyModifiers::NONE, KeyCode::Char('l')) => {
+                self.container_actions_index = 0;
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('p')) => {
+                self.container_actions_index = 1;
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('s')) => {
+                self.container_actions_index = 2;
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('d')) => {
+                self.container_actions_index = 3;
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('y')) => {
+                self.container_actions_index = 4;
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('i')) => {
+                self.container_actions_index = 5;
+                self.execute_selected_container_action();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('f')) => {
+                self.container_actions_index = 6;
+                self.execute_selected_container_action();
+            }
+            _ => {}
+        }
+    }
+
+    /// Execute the container action at the current container_actions_index.
+    fn execute_selected_container_action(&mut self) {
+        if self.container_actions.is_empty() {
+            self.mode = Mode::Normal;
+            return;
+        }
+        let action = self
+            .container_actions
+            .get(self.container_actions_index)
+            .cloned();
+        if action.is_none() {
+            self.mode = Mode::Normal;
+            return;
+        }
+        let action = action.unwrap();
+        // We need the selected row info before switching mode
+        let rows = self.table_rows();
+        let selected = rows.get(self.selected_index).cloned();
+        self.mode = Mode::Normal;
+
+        if let Some(TableRow::Container {
+            pod_index,
+            container,
+            ..
+        }) = selected
+        {
+            if let Some(pod) = self.pods.get(pod_index).cloned() {
+                match action {
+                    ContainerAction::Logs => {
+                        self.pending_shell = Some(self.build_logs_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                            false,
+                        ));
+                    }
+                    ContainerAction::PreviousLogs => {
+                        self.pending_shell = Some(self.build_logs_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                            true,
+                        ));
+                    }
+                    ContainerAction::Shell => {
+                        self.pending_shell = Some(self.build_shell_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                        ));
+                    }
+                    ContainerAction::Describe => {
+                        self.pending_shell =
+                            Some(self.build_describe_cmd("pod", &pod.namespace, &pod.name));
+                    }
+                    ContainerAction::Yaml => {
+                        self.pending_shell =
+                            Some(self.build_yaml_cmd("pod", &pod.namespace, &pod.name));
+                    }
+                    ContainerAction::SetImage => {
+                        self.set_image_namespace = pod.namespace.clone();
+                        self.set_image_pod = pod.name.clone();
+                        self.set_image_container = container.name.clone();
+                        self.set_image_buffer = String::new();
+                        self.mode = Mode::SetImageInput;
+                    }
+                    ContainerAction::PortForward => {
+                        self.port_forward_namespace = pod.namespace.clone();
+                        self.port_forward_pod = pod.name.clone();
+                        self.port_forward_container = Some(container.name.clone());
+                        self.port_forward_buffer = pod
+                            .container_details
+                            .iter()
+                            .find(|c| c.name == container.name)
+                            .and_then(|c| c.ports.first())
+                            .map(|p| format!("{}:{}", p.port, p.port))
+                            .unwrap_or_default();
+                        self.mode = Mode::PortForwardInput;
+                    }
+                    ContainerAction::Custom(cmd) => {
+                        let rendered = cmd.render(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                            self.context_name.as_deref(),
+                        );
+                        let (program, args) = split_shell_command(&rendered);
+                        self.pending_shell = Some(ShellCommand {
+                            program,
+                            args,
+                            fallback_commands: vec![],
+                            needs_pause: true,
+                            jq_filter: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     fn toggle_expand_selected(&mut self) {
         let rows = self.table_rows();
         if let Some(row) = rows.get(self.selected_index) {
@@ -868,39 +1421,67 @@ impl App {
     fn handle_namespace_picker_key(&mut self, key: KeyEvent) {
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Esc) => {
+                // Discard staged changes
+                self.staged_namespaces = None;
                 self.mode = Mode::Normal;
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
+                // Apply staged changes
+                if let Some(staged) = self.staged_namespaces.take() {
+                    self.selected_namespaces = staged;
+                }
                 self.mode = Mode::Normal;
             }
             (KeyModifiers::NONE, KeyCode::Char('a')) => {
-                self.select_all_namespaces();
+                // Select all = clear the staging set (empty = all)
+                if let Some(ref mut staged) = self.staged_namespaces {
+                    staged.clear();
+                }
             }
             (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
-                self.namespace_picker_index = (self.namespace_picker_index + 1)
-                    .min(self.filtered_namespaces().len().saturating_sub(1));
+                self.namespace_picker_index = (self.namespace_picker_index + 1).min(
+                    self.filtered_namespaces_for_picker()
+                        .len()
+                        .saturating_sub(1),
+                );
             }
             (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
                 self.namespace_picker_index = self.namespace_picker_index.saturating_sub(1);
             }
             (KeyModifiers::NONE, KeyCode::PageDown) => {
-                let page = 10.min(self.filtered_namespaces().len());
-                self.namespace_picker_index = (self.namespace_picker_index + page)
-                    .min(self.filtered_namespaces().len().saturating_sub(1));
+                let page = 10.min(self.filtered_namespaces_for_picker().len());
+                self.namespace_picker_index = (self.namespace_picker_index + page).min(
+                    self.filtered_namespaces_for_picker()
+                        .len()
+                        .saturating_sub(1),
+                );
             }
             (KeyModifiers::NONE, KeyCode::PageUp) => {
-                let page = 10.min(self.filtered_namespaces().len());
+                let page = 10.min(self.filtered_namespaces_for_picker().len());
                 self.namespace_picker_index = self.namespace_picker_index.saturating_sub(page);
             }
             (KeyModifiers::NONE, KeyCode::Home) => {
                 self.namespace_picker_index = 0;
             }
             (KeyModifiers::NONE, KeyCode::End) => {
-                self.namespace_picker_index = self.filtered_namespaces().len().saturating_sub(1);
+                self.namespace_picker_index = self
+                    .filtered_namespaces_for_picker()
+                    .len()
+                    .saturating_sub(1);
             }
             (KeyModifiers::NONE, KeyCode::Char(' ')) => {
-                if let Some(ns) = self.filtered_namespaces().get(self.namespace_picker_index) {
-                    self.toggle_namespace(ns);
+                if let Some(ns) = self
+                    .filtered_namespaces_for_picker()
+                    .get(self.namespace_picker_index)
+                    .cloned()
+                {
+                    if let Some(ref mut staged) = self.staged_namespaces {
+                        if staged.contains(&ns) {
+                            staged.remove(&ns);
+                        } else {
+                            staged.insert(ns);
+                        }
+                    }
                 }
             }
             (KeyModifiers::NONE, KeyCode::Backspace) => {
@@ -985,18 +1566,16 @@ impl App {
                 {
                     match intent {
                         ContainerPickerIntent::Shell => {
-                            self.pending_shell = Some(ShellCommand::kubectl_exec(
+                            self.pending_shell = Some(self.build_shell_cmd(
                                 &pod.namespace,
                                 &pod.name,
-                                self.context_name.as_deref(),
                                 Some(&container),
                             ));
                         }
                         ContainerPickerIntent::Logs(previous) => {
-                            self.pending_shell = Some(ShellCommand::kubectl_logs(
+                            self.pending_shell = Some(self.build_logs_cmd(
                                 &pod.namespace,
                                 &pod.name,
-                                self.context_name.as_deref(),
                                 Some(&container),
                                 previous,
                             ));
@@ -1007,6 +1586,21 @@ impl App {
                             self.set_image_container = container.clone();
                             self.set_image_buffer = String::new();
                             self.mode = Mode::SetImageInput;
+                            return;
+                        }
+                        ContainerPickerIntent::PortForward => {
+                            self.port_forward_namespace = pod.namespace.clone();
+                            self.port_forward_pod = pod.name.clone();
+                            self.port_forward_container = Some(container.clone());
+                            // Auto-fill with the selected container's first port
+                            self.port_forward_buffer = pod
+                                .container_details
+                                .iter()
+                                .find(|c| c.name == container)
+                                .and_then(|c| c.ports.first())
+                                .map(|p| format!("{}:{}", p.port, p.port))
+                                .unwrap_or_default();
+                            self.mode = Mode::PortForwardInput;
                             return;
                         }
                     }
@@ -1039,6 +1633,36 @@ impl App {
         }
     }
 
+    fn handle_port_forward_key(&mut self, key: KeyEvent) {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) => {
+                self.mode = Mode::Normal;
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                let ports = self.port_forward_buffer.trim().to_string();
+                if !ports.is_empty() {
+                    self.pending_shell = Some(self.build_port_forward_cmd(
+                        &self.port_forward_namespace,
+                        &self.port_forward_pod,
+                        self.port_forward_container.as_deref(),
+                        &ports,
+                    ));
+                }
+                self.mode = Mode::Normal;
+            }
+            (KeyModifiers::NONE, KeyCode::Backspace) => {
+                self.port_forward_buffer.pop();
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+                self.port_forward_buffer.clear();
+            }
+            (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                self.port_forward_buffer.push(c);
+            }
+            _ => {}
+        }
+    }
+
     fn handle_set_image_key(&mut self, key: KeyEvent) {
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Esc) => {
@@ -1047,12 +1671,11 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Enter) => {
                 let image = self.set_image_buffer.trim().to_string();
                 if !image.is_empty() {
-                    self.pending_shell = Some(ShellCommand::kubectl_set_image(
+                    self.pending_shell = Some(self.build_set_image_cmd(
                         &self.set_image_namespace,
                         &self.set_image_pod,
                         &self.set_image_container,
                         &image,
-                        self.context_name.as_deref(),
                     ));
                 }
                 self.mode = Mode::Normal;
@@ -1074,15 +1697,39 @@ impl App {
     fn handle_search_key(&mut self, key: KeyEvent) {
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Esc) => {
+                // Esc clears the search and returns to unfiltered view
+                self.search_query = None;
                 self.mode = Mode::Normal;
                 self.search_match_indices.clear();
+                self.search_active = false;
+                self.search_buffer.clear();
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
+                // Enter commits the search — keeps the filter active in Normal mode
+                if let Mode::Search(ref input) = self.mode {
+                    if !input.is_empty() {
+                        self.search_query = Some(input.clone());
+                    } else {
+                        self.search_query = None;
+                    }
+                }
                 self.mode = Mode::Normal;
+                self.search_match_indices.clear();
+                self.search_active = false;
+                self.search_buffer.clear();
+                // Clamp selection to visible rows after filtering
+                let total = self.table_rows().len();
+                if self.selected_index >= total && total > 0 {
+                    self.selected_index = total - 1;
+                }
             }
             (KeyModifiers::NONE, KeyCode::Backspace) => {
                 if let Mode::Search(ref mut input) = self.mode {
                     input.pop();
+                    if input.is_empty() {
+                        // If search becomes empty, clear the committed filter too
+                        self.search_query = None;
+                    }
                     self.update_search_matches();
                 }
             }
@@ -1200,6 +1847,7 @@ impl App {
                 }
             })
             .collect();
+        self.apply_sort();
         // Clean up expanded_pods for pods that no longer exist
         let current_pod_names: HashSet<String> = self.pods.iter().map(|p| p.name.clone()).collect();
         self.expanded_pods
@@ -1207,6 +1855,72 @@ impl App {
         // Clamp selected_index to the new table row count
         let total_rows = self.table_rows().len();
         self.selected_index = self.selected_index.min(total_rows.saturating_sub(1));
+    }
+
+    /// Apply the current sort_config to self.pods.
+    fn apply_sort(&mut self) {
+        match &self.sort_config {
+            SortConfig::NamespaceAsc => {
+                self.pods
+                    .sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
+            }
+            SortConfig::NamespaceDesc => {
+                self.pods
+                    .sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
+                self.pods.reverse();
+            }
+            SortConfig::NameAsc => {
+                self.pods.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+            SortConfig::NameDesc => {
+                self.pods.sort_by(|a, b| a.name.cmp(&b.name));
+                self.pods.reverse();
+            }
+            SortConfig::AgeAsc => {
+                // Parse age strings for comparison — oldest first
+                self.pods.sort_by(|a, b| a.age.cmp(&b.age));
+            }
+            SortConfig::AgeDesc => {
+                self.pods.sort_by(|a, b| a.age.cmp(&b.age));
+                self.pods.reverse();
+            }
+            SortConfig::StatusAsc => {
+                self.pods.sort_by(|a, b| a.status.cmp(&b.status));
+            }
+            SortConfig::StatusDesc => {
+                self.pods.sort_by(|a, b| a.status.cmp(&b.status));
+                self.pods.reverse();
+            }
+        }
+    }
+
+    /// Get a human-readable label for the current sort config.
+    pub fn sort_label(&self) -> &'static str {
+        match self.sort_config {
+            SortConfig::NamespaceAsc => "ns↑",
+            SortConfig::NamespaceDesc => "ns↓",
+            SortConfig::NameAsc => "name↑",
+            SortConfig::NameDesc => "name↓",
+            SortConfig::AgeAsc => "age↑",
+            SortConfig::AgeDesc => "age↓",
+            SortConfig::StatusAsc => "status↑",
+            SortConfig::StatusDesc => "status↓",
+        }
+    }
+
+    /// Get the table title including sort and active filter info.
+    pub fn table_title(&self) -> String {
+        let sort = self.sort_label();
+        match &self.mode {
+            Mode::Search(q) if !q.is_empty() => format!("Pods [{}] filter:{}", sort, q),
+            _ => {
+                if let Some(ref q) = self.search_query {
+                    format!("Pods [{}] filter:{}", sort, q)
+                } else {
+                    format!("Pods [{}]", sort)
+                }
+            }
+        }
     }
 
     pub fn add_namespace_pod_filter(&mut self, pattern: &str) -> anyhow::Result<()> {
@@ -1267,6 +1981,64 @@ impl App {
                 .cloned()
                 .collect()
         }
+    }
+
+    /// Filtered namespaces for the picker UI — uses the staging buffer for display.
+    pub fn filtered_namespaces_for_picker(&self) -> Vec<String> {
+        let base = self.active_namespaces();
+        if self.namespace_picker_search.is_empty() {
+            base
+        } else {
+            base.iter()
+                .filter(|ns| {
+                    ns.to_lowercase()
+                        .contains(&self.namespace_picker_search.to_lowercase())
+                })
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// Get the currently effective selected namespaces for the picker.
+    /// Returns the staged set if we're in picker mode, otherwise the actual set.
+    pub fn effective_selected_namespaces(&self) -> &HashSet<String> {
+        self.staged_namespaces
+            .as_ref()
+            .unwrap_or(&self.selected_namespaces)
+    }
+
+    /// Get a description of available container ports for the port-forward placeholder.
+    pub fn port_forward_suggestion(&self) -> String {
+        // Find the pod for port forward
+        let pod = self.pods.iter().find(|p| p.name == self.port_forward_pod);
+        if let Some(pod) = pod {
+            if let Some(ref container_name) = self.port_forward_container {
+                if let Some(detail) = pod
+                    .container_details
+                    .iter()
+                    .find(|c| &c.name == container_name)
+                {
+                    if !detail.ports.is_empty() {
+                        let ports: Vec<String> = detail
+                            .ports
+                            .iter()
+                            .map(|p| format!("{}:{}", p.port, p.port))
+                            .collect();
+                        return format!("ports: {}", ports.join(", "));
+                    }
+                }
+            } else if let Some(detail) = pod.container_details.first() {
+                if !detail.ports.is_empty() {
+                    let ports: Vec<String> = detail
+                        .ports
+                        .iter()
+                        .map(|p| format!("{}:{}", p.port, p.port))
+                        .collect();
+                    return format!("ports: {}", ports.join(", "));
+                }
+            }
+        }
+        "<local:remote>  e.g. 8080:80".to_string()
     }
 
     pub fn command_palette_query(&self) -> Option<&str> {

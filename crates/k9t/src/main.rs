@@ -15,8 +15,8 @@ use k9t_ui::layout::AppLayout;
 use k9t_ui::layout::is_terminal_too_small;
 use k9t_ui::theme::Theme;
 use k9t_ui::widgets::{
-    command_palette, confirm_dialog, container_picker, context_picker, footer, header,
-    namespace_bar, namespace_picker, resource_table, toast,
+    command_palette, confirm_dialog, container_actions, container_picker, context_picker, footer,
+    header, namespace_bar, namespace_picker, resource_table, toast,
 };
 
 /// Fullscreen overlay modes that replace the entire view.
@@ -27,8 +27,10 @@ fn is_fullscreen_overlay(mode: &Mode) -> bool {
             | Mode::NamespacePicker
             | Mode::ContextPicker
             | Mode::ContainerPicker(_)
+            | Mode::ContainerActions
             | Mode::ConfirmAction(_)
             | Mode::SetImageInput
+            | Mode::PortForwardInput
     )
 }
 
@@ -83,14 +85,14 @@ fn run_subcommand(
         print_command(&cmd.program, &cmd.args);
         let exit_code = run_single_command(&cmd.program, &cmd.args);
 
-        // For exec commands, if exit code is 126 (command not found in container),
-        // try each fallback shell in order (k9s behavior: try /bin/bash → /bin/sh → sh)
-        if exit_code == Some(126) {
+        // For exec commands, if exit code is 126/127 (command not found in container),
+        // try each fallback shell in order (sh → /bin/sh → /bin/bash)
+        if exit_code == Some(126) || exit_code == Some(127) {
             for fallback in &cmd.fallback_commands {
                 print_command(&fallback.program, &fallback.args);
                 let fallback_code = run_single_command(&fallback.program, &fallback.args);
                 // If the shell connected or user exited normally, stop retrying
-                if fallback_code != Some(126) {
+                if fallback_code != Some(126) && fallback_code != Some(127) {
                     break;
                 }
             }
@@ -116,23 +118,30 @@ fn command_exists(name: &str) -> bool {
 }
 
 /// Run a command and pipe its output through `less -RFX` for paging.
-/// If `jq_filter` is Some, inserts `jq -Rr '<filter>'` between the command and less
-/// to pretty-print JSON log lines while passing plain text through.
+/// When `jq_filter` is set, pipes through `jq` for JSON log pretty-printing,
+/// then optionally through `bat --style=plain` for syntax coloring if available.
+/// Falls back to plain `less` if neither is available.
 fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
     let less_available = command_exists("less");
     let use_jq = jq_filter.is_some() && command_exists("jq");
+    let use_bat = command_exists("bat");
 
     // Print the full pipeline so the user can see and copy-paste it
     {
         let kubectl_cmd = format!("{} {}", program, args.join(" "));
         if use_jq {
             if let Some(filter) = jq_filter {
-                print_pipeline(&[
-                    &kubectl_cmd,
-                    &format!("jq --unbuffered -Rr '{}'", filter),
-                    "less -RFX",
-                ]);
+                let mut parts: Vec<String> = vec![kubectl_cmd.clone()];
+                parts.push(format!("jq --unbuffered -Rr '{}'", filter));
+                if use_bat {
+                    parts.push("bat --style=plain --language json".to_string());
+                }
+                parts.push("less -RFX".to_string());
+                let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+                print_pipeline(&refs);
             }
+        } else if use_bat {
+            print_pipeline(&[&kubectl_cmd, "bat --style=plain", "less -RFX"]);
         } else {
             print_command(program, args);
         }
@@ -159,9 +168,9 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
 
         let kubectl_stdout = kubectl.stdout.unwrap();
 
-        // Pipeline: kubectl → [jq] → less
+        // Pipeline: kubectl → [jq] → [bat] → less
         if let Some(filter) = jq_filter.filter(|_| use_jq) {
-            // kubectl → jq → less
+            // kubectl → jq → [bat] → less
             let jq = std::process::Command::new("jq")
                 .arg("--unbuffered")
                 .arg("-Rr")
@@ -173,9 +182,74 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
 
             match jq {
                 Ok(jq_proc) => {
+                    let jq_stdout = jq_proc.stdout.unwrap();
+                    if use_bat {
+                        let bat = std::process::Command::new("bat")
+                            .arg("--style=plain")
+                            .arg("--language")
+                            .arg("json")
+                            .stdin(jq_stdout)
+                            .stdout(std::process::Stdio::piped())
+                            .spawn();
+                        match bat {
+                            Ok(bat_proc) => {
+                                let less = std::process::Command::new("less")
+                                    .arg("-RFX")
+                                    .stdin(bat_proc.stdout.unwrap())
+                                    .spawn();
+                                match less {
+                                    Ok(mut less_proc) => {
+                                        let _ = less_proc.wait();
+                                    }
+                                    Err(e) => {
+                                        eprintln!("\nk9t: failed to run 'less': {}", e);
+                                        eprintln!("Press Enter to return to k9t...");
+                                        let _ = std::io::stdin().read_line(&mut String::new());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("\nk9t: failed to run 'bat': {}", e);
+                                eprintln!("Press Enter to return to k9t...");
+                                let _ = std::io::stdin().read_line(&mut String::new());
+                            }
+                        }
+                    } else {
+                        let less = std::process::Command::new("less")
+                            .arg("-RFX")
+                            .stdin(jq_stdout)
+                            .spawn();
+                        match less {
+                            Ok(mut less_proc) => {
+                                let _ = less_proc.wait();
+                            }
+                            Err(e) => {
+                                eprintln!("\nk9t: failed to run 'less': {}", e);
+                                eprintln!("Press Enter to return to k9t...");
+                                let _ = std::io::stdin().read_line(&mut String::new());
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("\nk9t: failed to run 'jq': {}", e);
+                    eprintln!("Press Enter to return to k9t...");
+                    let _ = std::io::stdin().read_line(&mut String::new());
+                }
+            }
+        } else if use_bat {
+            // kubectl → bat → less (no jq, use bat for syntax coloring)
+            let bat = std::process::Command::new("bat")
+                .arg("--style=plain")
+                .stdin(kubectl_stdout)
+                .stdout(std::process::Stdio::piped())
+                .spawn();
+
+            match bat {
+                Ok(bat_proc) => {
                     let less = std::process::Command::new("less")
                         .arg("-RFX")
-                        .stdin(jq_proc.stdout.unwrap())
+                        .stdin(bat_proc.stdout.unwrap())
                         .spawn();
                     match less {
                         Ok(mut less_proc) => {
@@ -189,13 +263,13 @@ fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
                     }
                 }
                 Err(e) => {
-                    eprintln!("\nk9t: failed to run 'jq': {}", e);
+                    eprintln!("\nk9t: failed to run 'bat': {}", e);
                     eprintln!("Press Enter to return to k9t...");
                     let _ = std::io::stdin().read_line(&mut String::new());
                 }
             }
         } else {
-            // kubectl → less (no jq)
+            // kubectl → less (no jq, no bat)
             let less = std::process::Command::new("less")
                 .arg("-RFX")
                 .stdin(kubectl_stdout)
@@ -237,8 +311,8 @@ fn run_single_command(program: &str, args: &[String]) -> Option<i32> {
     match status {
         Ok(s) => {
             let code = s.code();
-            if !s.success() && code != Some(126) && code != Some(130) {
-                // 126 = shell not found (retry with fallbacks)
+            if !s.success() && code != Some(126) && code != Some(127) && code != Some(130) {
+                // 126/127 = shell not found (retry with fallbacks)
                 // 130 = Ctrl+C exit (normal for interactive commands like logs -f)
                 eprintln!("\nk9t: command exited with code: {}", code.unwrap_or(-1));
                 eprintln!("Press Enter to return to k9t...");
@@ -276,18 +350,30 @@ async fn main() -> Result<()> {
     });
 
     let client = create_client(cli.context.as_deref()).await.map_err(|e| {
-        anyhow::anyhow!("Cannot connect to Kubernetes: {e}. Check your kubeconfig.")
+        let msg = format!("{e}");
+        if msg.contains("401") || msg.contains("Unauthorized") || msg.contains("unauthorized") {
+            anyhow::anyhow!(
+                "Unauthorized: Kubernetes API returned 401. Check your credentials and kubeconfig."
+            )
+        } else if msg.contains("403") || msg.contains("Forbidden") || msg.contains("forbidden") {
+            anyhow::anyhow!("Forbidden: Kubernetes API returned 403. Check your RBAC permissions.")
+        } else {
+            anyhow::anyhow!("Cannot connect to Kubernetes: {e}. Check your kubeconfig.")
+        }
     })?;
 
     let mut client = client;
     let mut reflector = PodReflector::start(client.clone())?;
 
     let mut terminal = ratatui::init();
+    // Enable mouse capture for click and scroll support
+    crossterm::execute!(std::io::stderr(), crossterm::event::EnableMouseCapture).unwrap_or(());
     let mut theme = Theme::auto();
 
     let mut app = App::with_commands(
         resolve_context_name(cli.context.as_deref()).await.ok(),
         config.commands.clone(),
+        config.overrides.clone(),
     );
     if let Some(ns) = cli.namespace.as_deref().or(config.namespace.as_deref()) {
         app.namespace_filter = ns.to_string();
@@ -336,6 +422,9 @@ async fn main() -> Result<()> {
                         Event::Resize(w, h) => {
                             app.update(AppEvent::Resize(w, h));
                         }
+                        Event::Mouse(mouse) => {
+                            app.update(AppEvent::Mouse(mouse));
+                        }
                         _ => {}
                     }
                 }
@@ -374,15 +463,31 @@ async fn main() -> Result<()> {
                     app.show_toast(msg, k9t_app::ToastType::Success, 6);
                 }
                 Err(e) => {
-                    let msg = match &action {
-                        AsyncAction::KillPod { name, .. } => {
-                            format!("Failed to delete {}: {}", name, e)
-                        }
-                        AsyncAction::RestartDeployment { name, .. } => {
-                            format!("Failed to restart {}: {}", name, e)
-                        }
-                    };
-                    app.show_toast(msg, k9t_app::ToastType::Error, 10);
+                    let err_msg = format!("{e}");
+                    let (msg, toast_type) =
+                        if err_msg.contains("401") || err_msg.contains("Unauthorized") {
+                            (
+                                "Unauthorized: Check your Kubernetes credentials.".to_string(),
+                                k9t_app::ToastType::Error,
+                            )
+                        } else if err_msg.contains("403") || err_msg.contains("Forbidden") {
+                            (
+                                "Forbidden: Check your RBAC permissions.".to_string(),
+                                k9t_app::ToastType::Error,
+                            )
+                        } else {
+                            match &action {
+                                AsyncAction::KillPod { name, .. } => (
+                                    format!("Failed to delete {}: {}", name, e),
+                                    k9t_app::ToastType::Error,
+                                ),
+                                AsyncAction::RestartDeployment { name, .. } => (
+                                    format!("Failed to restart {}: {}", name, e),
+                                    k9t_app::ToastType::Error,
+                                ),
+                            }
+                        };
+                    app.show_toast(msg, toast_type, 10);
                 }
             }
         }
@@ -404,11 +509,15 @@ async fn main() -> Result<()> {
                     );
                 }
                 Err(e) => {
-                    app.show_toast(
-                        format!("Failed to switch context: {e}"),
-                        k9t_app::ToastType::Error,
-                        10,
-                    );
+                    let err_msg = format!("{e}");
+                    let msg = if err_msg.contains("401") || err_msg.contains("Unauthorized") {
+                        "Unauthorized: Check your Kubernetes credentials.".to_string()
+                    } else if err_msg.contains("403") || err_msg.contains("Forbidden") {
+                        "Forbidden: Check your RBAC permissions.".to_string()
+                    } else {
+                        format!("Failed to switch context: {e}")
+                    };
+                    app.show_toast(msg, k9t_app::ToastType::Error, 10);
                 }
             }
         }
@@ -418,7 +527,7 @@ async fn main() -> Result<()> {
 
             if is_terminal_too_small(area) {
                 use ratatui::widgets::Paragraph;
-                let msg = Paragraph::new("Terminal too small — k9t requires at least 80x24")
+                let msg = Paragraph::new("Terminal too small — k9t requires at least 80x12")
                     .style(ratatui::style::Style::default().fg(ratatui::style::Color::Red));
                 frame.render_widget(msg, area);
                 return;
@@ -439,8 +548,10 @@ async fn main() -> Result<()> {
                 Mode::Help => "HELP",
                 Mode::NamespacePicker => "NAMESPACES",
                 Mode::ContainerPicker(_) => "CONTAINERS",
+                Mode::ContainerActions => "ACTIONS",
                 Mode::ContextPicker => "CONTEXTS",
                 Mode::SetImageInput => "SET IMAGE",
+                Mode::PortForwardInput => "PORT FORWARD",
             };
 
             let ns_display = if app.namespace_pod_filters.is_empty() {
@@ -473,11 +584,13 @@ async fn main() -> Result<()> {
                     &theme,
                 );
                 let rows = app.table_rows();
+                let title = app.table_title();
                 resource_table::render_pod_table(
                     frame,
                     layout.table,
                     &rows,
                     app.selected_index,
+                    &title,
                     &theme,
                 );
             }
@@ -532,7 +645,9 @@ async fn main() -> Result<()> {
                             ("Enter", "expand"),
                             ("l", "logs"),
                             ("s", "shell"),
+                            ("f", "port-forward"),
                             ("i", "image"),
+                            (",", "sort"),
                             ("K", "kill"),
                             ("R", "restart"),
                             ("?", "help"),
@@ -567,11 +682,12 @@ async fn main() -> Result<()> {
                     );
                 }
                 Mode::NamespacePicker => {
+                    let selected = app.effective_selected_namespaces();
                     namespace_picker::render_namespace_picker(
                         frame,
                         frame.area(),
                         &app.active_namespaces(),
-                        &app.selected_namespaces,
+                        selected,
                         app.namespace_picker_index,
                         &app.namespace_picker_search,
                         &theme,
@@ -597,6 +713,7 @@ async fn main() -> Result<()> {
                         k9t_app::ContainerPickerIntent::Shell => "Shell",
                         k9t_app::ContainerPickerIntent::Logs(_) => "Logs",
                         k9t_app::ContainerPickerIntent::SetImage => "Set Image",
+                        k9t_app::ContainerPickerIntent::PortForward => "Port Forward",
                     };
                     container_picker::render_container_picker(
                         frame,
@@ -608,42 +725,78 @@ async fn main() -> Result<()> {
                         &theme,
                     );
                 }
+                Mode::ContainerActions => {
+                    let (pod_name, container_name) =
+                        if let Some(row) = app.table_rows().get(app.selected_index) {
+                            match row {
+                                k9t_app::TableRow::Container {
+                                    pod_index,
+                                    container,
+                                    ..
+                                } => {
+                                    let pod_name = app
+                                        .pods
+                                        .get(*pod_index)
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_default();
+                                    (pod_name, container.name.clone())
+                                }
+                                _ => (String::new(), String::new()),
+                            }
+                        } else {
+                            (String::new(), String::new())
+                        };
+                    container_actions::render_container_actions(
+                        frame,
+                        frame.area(),
+                        &app.container_actions,
+                        app.container_actions_index,
+                        &pod_name,
+                        &container_name,
+                        &theme,
+                    );
+                }
                 Mode::SetImageInput => {
                     let container = app.set_image_container.as_str();
                     let pod = app.set_image_pod.as_str();
                     let ns = app.set_image_namespace.as_str();
+                    let label = format!("Set image for {ns}/{pod}/{container}:");
                     let input = app.set_image_buffer.as_str();
-                    let prompt_label = format!(" Set image for {ns}/{pod}/{container}: ");
-                    let mut spans = vec![
-                        ratatui::text::Span::styled(prompt_label, theme.fg_muted()),
-                        ratatui::text::Span::styled(input.to_string(), theme.fg_default()),
-                        ratatui::text::Span::styled("█", theme.accent_primary()),
-                    ];
-                    if input.is_empty() {
-                        spans.push(ratatui::text::Span::styled(
-                            " <image:tag>",
-                            theme.fg_muted(),
-                        ));
-                    }
-                    let prompt = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(spans))
-                        .style(theme.bg_surface());
-                    frame.render_widget(ratatui::widgets::Clear, area);
-                    frame.render_widget(prompt, area);
-
-                    let hint = " [Enter]apply  [Esc]cancel  [Ctrl+U]clear";
-                    let hint_line = ratatui::text::Line::from(ratatui::text::Span::styled(
-                        hint,
-                        theme.fg_muted(),
-                    ));
-                    let hint_area = ratatui::layout::Rect::new(
-                        area.x,
-                        area.y + area.height.saturating_sub(2),
-                        area.width.min(60),
-                        1,
+                    confirm_dialog::render_input_dialog(
+                        frame,
+                        area,
+                        "Set Image",
+                        &label,
+                        input,
+                        "<image:tag>",
+                        "[Enter]apply  [Esc]cancel  [Ctrl+U]clear",
+                        &theme,
                     );
-                    frame.render_widget(
-                        ratatui::widgets::Paragraph::new(hint_line).style(theme.bg_surface()),
-                        hint_area,
+                }
+                Mode::PortForwardInput => {
+                    let pod = app.port_forward_pod.as_str();
+                    let ns = app.port_forward_namespace.as_str();
+                    let container_info = app
+                        .port_forward_container
+                        .as_deref()
+                        .map(|c| format!("/{c}"))
+                        .unwrap_or_default();
+                    let label = format!("Port forward {ns}/{pod}{container_info}:");
+                    let input = app.port_forward_buffer.as_str();
+                    let placeholder = if input.is_empty() {
+                        app.port_forward_suggestion()
+                    } else {
+                        String::new()
+                    };
+                    confirm_dialog::render_input_dialog(
+                        frame,
+                        area,
+                        "Port Forward",
+                        &label,
+                        input,
+                        &placeholder,
+                        "[Enter]apply  [Esc]cancel  [Ctrl+U]clear",
+                        &theme,
                     );
                 }
                 Mode::Help => {
@@ -655,9 +808,8 @@ async fn main() -> Result<()> {
                         .add_modifier(ratatui::style::Modifier::BOLD);
                     let cmd_style = theme.status_success();
 
-                    // Build help lines dynamically to include custom commands
-                    let mut help_lines: Vec<ratatui::text::Line> = vec![
-                        ratatui::text::Line::from(""),
+                    // ── Left column ──
+                    let left_lines: Vec<ratatui::text::Line> = vec![
                         ratatui::text::Line::from(ratatui::text::Span::styled(
                             " k9t — Kubernetes Terminal UI",
                             accent,
@@ -667,69 +819,70 @@ async fn main() -> Result<()> {
                             dim,
                         )),
                         ratatui::text::Line::from(""),
-                        // ── Navigation ──
+                        // Navigation
                         ratatui::text::Line::from(ratatui::text::Span::styled(
                             " Navigation",
                             title,
                         )),
                         ratatui::text::Line::from(vec![
-                            ratatui::text::Span::styled("   j/k  ↑/↓     ", emphasis),
+                            ratatui::text::Span::styled("   j/k ↑/↓      ", emphasis),
                             ratatui::text::Span::styled("Move selection", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   Enter         ", emphasis),
-                            ratatui::text::Span::styled("Expand/collapse pod containers", dim),
+                            ratatui::text::Span::styled("Expand/collapse", dim),
                         ]),
                         ratatui::text::Line::from(vec![
-                            ratatui::text::Span::styled("   g/G  Home/End ", emphasis),
-                            ratatui::text::Span::styled("Jump to top/bottom", dim),
+                            ratatui::text::Span::styled("   g/G Home/End  ", emphasis),
+                            ratatui::text::Span::styled("Top/bottom", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   Esc           ", emphasis),
-                            ratatui::text::Span::styled("Go back / close overlay", dim),
+                            ratatui::text::Span::styled("Back / close", dim),
                         ]),
                         ratatui::text::Line::from(""),
-                        // ── Actions ──
+                        // Actions
                         ratatui::text::Line::from(ratatui::text::Span::styled(" Actions", title)),
                         ratatui::text::Line::from(ratatui::text::Span::styled(
-                            "   (on container row: targets that container)",
+                            "   (on container: targets that container)",
                             dim,
                         )),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   l             ", emphasis),
-                            ratatui::text::Span::styled("View logs (kubectl logs -f)", dim),
+                            ratatui::text::Span::styled("Logs (kubectl logs)", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   p             ", emphasis),
-                            ratatui::text::Span::styled("View previous logs", dim),
+                            ratatui::text::Span::styled("Previous logs", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   s             ", emphasis),
-                            ratatui::text::Span::styled("Shell into pod (kubectl exec)", dim),
+                            ratatui::text::Span::styled("Shell (kubectl exec)", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   d             ", emphasis),
-                            ratatui::text::Span::styled("Describe pod (kubectl describe)", dim),
+                            ratatui::text::Span::styled("Describe pod", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   y             ", emphasis),
-                            ratatui::text::Span::styled("View YAML (kubectl get -o yaml)", dim),
+                            ratatui::text::Span::styled("View YAML", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   i             ", emphasis),
-                            ratatui::text::Span::styled(
-                                "Set container image (kubectl set image)",
-                                dim,
-                            ),
+                            ratatui::text::Span::styled("Set container image", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   f             ", emphasis),
+                            ratatui::text::Span::styled("Port forward", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled(
                                 "   K             ",
                                 theme
-                                    .status_error()
+                                    .status_warning()
                                     .add_modifier(ratatui::style::Modifier::BOLD),
                             ),
-                            ratatui::text::Span::styled("Kill pod (with confirmation)", dim),
+                            ratatui::text::Span::styled("Kill pod", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled(
@@ -738,51 +891,75 @@ async fn main() -> Result<()> {
                                     .status_warning()
                                     .add_modifier(ratatui::style::Modifier::BOLD),
                             ),
-                            ratatui::text::Span::styled(
-                                "Restart deployment (with confirmation)",
-                                dim,
-                            ),
+                            ratatui::text::Span::styled("Restart deployment", dim),
                         ]),
+                    ];
+
+                    // ── Right column ──
+                    let mut right_lines: Vec<ratatui::text::Line> = vec![
                         ratatui::text::Line::from(""),
-                        // ── Search / Filter ──
+                        ratatui::text::Line::from(""),
+                        // Search / Filter / Sort
                         ratatui::text::Line::from(ratatui::text::Span::styled(
-                            " Search / Filter",
+                            " Search / Sort",
                             title,
                         )),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   /             ", emphasis),
-                            ratatui::text::Span::styled("Start search / filter", dim),
+                            ratatui::text::Span::styled("Filter pods", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   ,             ", emphasis),
+                            ratatui::text::Span::styled("Cycle sort order", dim),
                         ]),
                         ratatui::text::Line::from(""),
-                        // ── Command Mode ──
+                        // Command Mode
                         ratatui::text::Line::from(ratatui::text::Span::styled(
-                            " Command Mode   (press : to enter)",
+                            " Command Mode  (press :)",
                             title,
                         )),
                         ratatui::text::Line::from(vec![
-                            ratatui::text::Span::styled("   :q  :quit      ", cmd_style),
+                            ratatui::text::Span::styled("   :q  :quit     ", cmd_style),
+                            ratatui::text::Span::styled("Quit k9t", dim),
+                        ]),
+                        ratatui::text::Line::from(""),
+                        // UI
+                        ratatui::text::Line::from(ratatui::text::Span::styled(" UI", title)),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   n             ", emphasis),
+                            ratatui::text::Span::styled("Namespace picker", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   x             ", emphasis),
+                            ratatui::text::Span::styled("Context picker", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   Shift+T       ", emphasis),
+                            ratatui::text::Span::styled("Cycle theme", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   Ctrl-C        ", emphasis),
                             ratatui::text::Span::styled("Quit k9t", dim),
                         ]),
                     ];
 
                     // ── Custom Commands (from config) ──
                     if !app.custom_commands.is_empty() {
-                        help_lines.push(ratatui::text::Line::from(""));
-                        help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                            " Custom Commands   (from ~/.config/k9t.json)",
+                        right_lines.push(ratatui::text::Line::from(""));
+                        right_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                            " Custom Commands  (~/.config/k9t.json)",
                             title,
                         )));
                         for cc in &app.custom_commands {
                             let desc = cc.description.as_deref().unwrap_or(&cc.command);
-                            // Truncate long descriptions for display
-                            let desc_display = if desc.len() > 50 {
-                                format!("{}…", &desc[..47])
+                            let desc_display = if desc.len() > 38 {
+                                format!("{}…", &desc[..35])
                             } else {
                                 desc.to_string()
                             };
-                            help_lines.push(ratatui::text::Line::from(vec![
+                            right_lines.push(ratatui::text::Line::from(vec![
                                 ratatui::text::Span::styled(
-                                    format!("   :{:<14}", cc.name),
+                                    format!("   :{:<10}", cc.name),
                                     cmd_style,
                                 ),
                                 ratatui::text::Span::styled(desc_display, dim),
@@ -790,36 +967,25 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    help_lines.push(ratatui::text::Line::from(""));
-                    // ── UI ──
-                    help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                        " UI", title,
-                    )));
-                    help_lines.push(ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled("   n             ", emphasis),
-                        ratatui::text::Span::styled("Open namespace picker", dim),
-                    ]));
-                    help_lines.push(ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled("   x             ", emphasis),
-                        ratatui::text::Span::styled("Open context picker", dim),
-                    ]));
-                    help_lines.push(ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled("   Shift+T       ", emphasis),
-                        ratatui::text::Span::styled("Cycle color theme", dim),
-                    ]));
-                    help_lines.push(ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled("   Ctrl-C        ", emphasis),
-                        ratatui::text::Span::styled("Quit k9t", dim),
-                    ]));
-                    help_lines.push(ratatui::text::Line::from(""));
-                    help_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                        " Press ? or Esc to close this help",
+                    right_lines.push(ratatui::text::Line::from(""));
+                    right_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                        " Press ? or Esc to close",
                         dim,
                     )));
 
-                    let help_widget =
-                        ratatui::widgets::Paragraph::new(help_lines).style(theme.bg_surface());
-                    frame.render_widget(help_widget, frame.area());
+                    // Render two columns
+                    let [left_area, right_area] = ratatui::layout::Layout::horizontal([
+                        ratatui::layout::Constraint::Percentage(50),
+                        ratatui::layout::Constraint::Percentage(50),
+                    ])
+                    .areas(frame.area());
+
+                    let left_widget =
+                        ratatui::widgets::Paragraph::new(left_lines).style(theme.bg_surface());
+                    let right_widget =
+                        ratatui::widgets::Paragraph::new(right_lines).style(theme.bg_surface());
+                    frame.render_widget(left_widget, left_area);
+                    frame.render_widget(right_widget, right_area);
                 }
                 _ => {}
             }

@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 
 pub const MIN_WIDTH: u16 = 80;
-pub const MIN_HEIGHT: u16 = 24;
+pub const MIN_HEIGHT: u16 = 6;
 
 pub fn is_terminal_too_small(area: Rect) -> bool {
     area.width < MIN_WIDTH || area.height < MIN_HEIGHT

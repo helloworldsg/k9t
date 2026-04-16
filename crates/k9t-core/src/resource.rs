@@ -27,6 +27,26 @@ impl ResourceType {
     }
 }
 
+/// A simplified container port representation for display and port-forward suggestions.
+#[derive(Debug, Clone)]
+pub struct ContainerPortInfo {
+    /// Port number (container_port from the spec).
+    pub port: u16,
+    /// Port name, if specified.
+    pub name: Option<String>,
+    /// Protocol (TCP, UDP, SCTP). Defaults to TCP.
+    pub protocol: String,
+}
+
+impl std::fmt::Display for ContainerPortInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.name {
+            Some(name) => write!(f, "{}({}/{})", self.port, self.protocol, name),
+            None => write!(f, "{}", self.port),
+        }
+    }
+}
+
 // ContainerDetail — per-container status extracted from pod.status.container_statuses
 
 #[derive(Debug, Clone)]
@@ -40,6 +60,8 @@ pub struct ContainerDetail {
     pub reason: String,
     /// Container image
     pub image: String,
+    /// Container ports from the pod spec.
+    pub ports: Vec<ContainerPortInfo>,
 }
 
 // PodInfo
@@ -83,7 +105,13 @@ impl From<&Pod> for PodInfo {
             })
             .unwrap_or((0, 0));
 
-        // Extract per-container status details
+        // Extract per-container status details, cross-referencing ports from the pod spec
+        let spec_containers_list: Vec<&k8s_openapi::api::core::v1::Container> = pod
+            .spec
+            .as_ref()
+            .map(|s| s.containers.iter().collect())
+            .unwrap_or_default();
+
         let container_details: Vec<ContainerDetail> = pod
             .status
             .as_ref()
@@ -115,6 +143,29 @@ impl From<&Pod> for PodInfo {
                             })
                             .unwrap_or(("Unknown".to_string(), String::new()));
 
+                        // Find matching spec container to extract ports
+                        let ports: Vec<ContainerPortInfo> = spec_containers_list
+                            .iter()
+                            .find(|sc| sc.name == cs.name)
+                            .map(|sc| {
+                                sc.ports
+                                    .as_ref()
+                                    .map(|ps| {
+                                        ps.iter()
+                                            .map(|p| ContainerPortInfo {
+                                                port: p.container_port as u16,
+                                                name: p.name.clone(),
+                                                protocol: p
+                                                    .protocol
+                                                    .clone()
+                                                    .unwrap_or_else(|| "TCP".to_string()),
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            })
+                            .unwrap_or_default();
+
                         ContainerDetail {
                             name: cs.name.clone(),
                             ready: cs.ready,
@@ -122,6 +173,7 @@ impl From<&Pod> for PodInfo {
                             status: state_str,
                             reason: reason_str,
                             image: cs.image.clone(),
+                            ports,
                         }
                     })
                     .collect()
@@ -448,15 +500,17 @@ fn format_age(created: &jiff::Timestamp) -> String {
         Err(_) => return "Unknown".to_string(),
     };
 
-    let days = span.get_days();
-    let hours = span.get_hours();
-    let minutes = span.get_minutes();
+    // Use total() to compute age in each unit regardless of how the span
+    // internally stores its fields. Falls back to 0.0 if the span is empty.
+    let total_days = span.total(jiff::Unit::Day).unwrap_or(0.0) as u64;
+    let total_hours = span.total(jiff::Unit::Hour).unwrap_or(0.0) as u64;
+    let total_minutes = span.total(jiff::Unit::Minute).unwrap_or(0.0) as u64;
 
-    if days > 0 {
-        format!("{days}d{hours}h")
-    } else if hours > 0 {
-        format!("{hours}h{minutes}m")
+    if total_days > 0 {
+        format!("{total_days}d{}h", total_hours % 24)
+    } else if total_hours > 0 {
+        format!("{total_hours}h{}m", total_minutes % 60)
     } else {
-        format!("{minutes}m")
+        format!("{total_minutes}m")
     }
 }

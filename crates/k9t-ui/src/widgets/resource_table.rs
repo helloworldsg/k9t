@@ -3,7 +3,7 @@ use ratatui::{
     layout::Constraint,
     style::Style,
     text::Span,
-    widgets::{Block, Cell, Row, Table},
+    widgets::{Block, Cell, Row, Table, TableState},
 };
 
 use k9t_app::TableRow;
@@ -90,6 +90,7 @@ pub fn render_pod_table(
     area: ratatui::layout::Rect,
     rows: &[TableRow],
     selected_index: usize,
+    title: &str,
     theme: &Theme,
 ) {
     let header_cells = ["NAMESPACE", "NAME", "READY", "STATUS", "RESTARTS", "AGE"]
@@ -145,13 +146,27 @@ pub fn render_pod_table(
                         container_status_style(theme, &container.status),
                     ));
 
+                    // Show port info if available
+                    let port_str = if container.ports.is_empty() {
+                        String::new()
+                    } else if container.ports.len() == 1 {
+                        format!("{}", container.ports[0].port)
+                    } else {
+                        container
+                            .ports
+                            .iter()
+                            .map(|p| format!("{}", p.port))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    };
+
                     Row::new(vec![
                         Cell::from(""), // NAMESPACE — empty for containers
                         Cell::from(name_cell),
                         Cell::from(Span::styled(ready_str, ready_style)),
                         status_cell,
                         Cell::from(container.restart_count.to_string()),
-                        Cell::from(""), // AGE — empty for containers
+                        Cell::from(port_str), // PORT — show container ports
                     ])
                     .style(if is_selected {
                         theme.selected_style()
@@ -165,10 +180,19 @@ pub fn render_pod_table(
 
     let widths = compute_column_widths(rows);
 
+    let block = Block::new()
+        .style(theme.bg_surface())
+        .title(title.to_string());
+
     let table = Table::new(table_rows, widths)
         .header(header)
         .row_highlight_style(theme.selected_style())
-        .block(Block::new().style(theme.bg_surface()).title("Pods"));
+        .block(block);
 
-    frame.render_widget(table, area);
+    // Use TableState for proper scrolling — ratatui automatically scrolls
+    // the viewport to keep the selected row visible.
+    let mut state = TableState::default();
+    state.select(Some(selected_index));
+
+    frame.render_stateful_widget(table, area, &mut state);
 }

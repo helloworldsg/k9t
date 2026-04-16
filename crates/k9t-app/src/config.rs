@@ -26,6 +26,24 @@ pub struct CustomCommand {
     pub description: Option<String>,
 }
 
+impl CommandOverride {
+    /// Render the command template by substituting known variables.
+    pub fn render(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+        context: Option<&str>,
+    ) -> String {
+        let mut cmd = self.command.clone();
+        cmd = cmd.replace("{{NAMESPACE}}", namespace);
+        cmd = cmd.replace("{{POD}}", pod_name);
+        cmd = cmd.replace("{{CONTAINER}}", container.unwrap_or(""));
+        cmd = cmd.replace("{{CONTEXT}}", context.unwrap_or(""));
+        cmd
+    }
+}
+
 impl CustomCommand {
     /// Returns true when this command is applicable to the given pod.
     pub fn matches(&self, namespace: &str, pod_name: &str) -> bool {
@@ -67,6 +85,64 @@ impl CustomCommand {
     }
 }
 
+/// Override for a built-in command. The `command` template supports the same
+/// variables as `CustomCommand`: `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`.
+/// If `needs_pause` is true, the output is piped through `less -RFX`.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct CommandOverride {
+    /// Shell command template with `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`.
+    pub command: String,
+    /// Whether to pipe through `less -RFX` for paging (default: varies by command).
+    #[serde(default)]
+    pub needs_pause: Option<bool>,
+}
+
+/// Overrides for built-in commands. Each key maps to a built-in action:
+/// - `"logs"` — View pod logs (default: `kubectl logs -f`)
+/// - `"previous-logs"` — View previous logs (default: `kubectl logs --previous`)
+/// - `"shell"` — Shell into pod (default: `kubectl exec -it`)
+/// - `"describe"` — Describe pod (default: `kubectl describe`)
+/// - `"yaml"` — View YAML (default: `kubectl get -o yaml`)
+/// - `"set-image"` — Set container image (default: `kubectl set image`)
+/// - `"port-forward"` — Port forward (default: `kubectl port-forward`)
+///
+/// Example config:
+/// ```json
+/// {
+///   "overrides": {
+///     "logs": { "command": "stern {{NAMESPACE}}/{{POD}} --context {{CONTEXT}}", "needs_pause": false },
+///     "shell": { "command": "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- /bin/bash" }
+///   }
+/// }
+/// ```
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(default)]
+pub struct CommandOverrides {
+    /// Override for `kubectl logs -f` (tail logs).
+    #[serde(default)]
+    pub logs: Option<CommandOverride>,
+    /// Override for `kubectl logs --previous` (previous logs).
+    #[serde(default)]
+    pub previous_logs: Option<CommandOverride>,
+    /// Override for `kubectl exec -it` (shell into pod).
+    #[serde(default)]
+    pub shell: Option<CommandOverride>,
+    /// Override for `kubectl describe` (describe pod).
+    #[serde(default)]
+    pub describe: Option<CommandOverride>,
+    /// Override for `kubectl get -o yaml` (view YAML).
+    #[serde(default)]
+    pub yaml: Option<CommandOverride>,
+    /// Override for `kubectl set image` (set container image).
+    /// Template also supports `{{IMAGE}}` for the new image reference.
+    #[serde(default)]
+    pub set_image: Option<CommandOverride>,
+    /// Override for `kubectl port-forward`.
+    /// Template also supports `{{LOCAL_PORT}}:{{REMOTE_PORT}}` for the port spec.
+    #[serde(default)]
+    pub port_forward: Option<CommandOverride>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     #[serde(default = "default_theme")]
@@ -85,6 +161,9 @@ pub struct Config {
     /// User-defined custom commands.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
+    /// Overrides for built-in commands (logs, shell, describe, etc.).
+    #[serde(default)]
+    pub overrides: CommandOverrides,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -114,6 +193,7 @@ impl Default for Config {
             layout: LayoutPreset::default(),
             filters: Vec::new(),
             commands: Vec::new(),
+            overrides: CommandOverrides::default(),
         }
     }
 }
@@ -407,5 +487,90 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn command_override_render() {
+        let override_cmd = CommandOverride {
+            command: "stern {{NAMESPACE}}/{{POD}} --context {{CONTEXT}} -c {{CONTAINER}}"
+                .to_string(),
+            needs_pause: Some(false),
+        };
+        let rendered =
+            override_cmd.render("production", "web-1234", Some("api"), Some("my-cluster"));
+        assert_eq!(
+            rendered,
+            "stern production/web-1234 --context my-cluster -c api"
+        );
+    }
+
+    #[test]
+    fn command_override_render_image_template() {
+        let override_cmd = CommandOverride {
+            command: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}}"
+                .to_string(),
+            needs_pause: Some(true),
+        };
+        let mut rendered = override_cmd.render("default", "my-pod", Some("web"), None);
+        rendered = rendered.replace("{{IMAGE}}", "nginx:latest");
+        assert_eq!(
+            rendered,
+            "kubectl set image pod/my-pod -n default web=nginx:latest"
+        );
+    }
+
+    #[test]
+    fn command_overrides_json_roundtrip() {
+        let json = r#"{
+            "theme": "nord",
+            "overrides": {
+                "logs": { "command": "stern {{NAMESPACE}}/{{POD}}", "needs_pause": false },
+                "shell": { "command": "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} -- /bin/bash" },
+                "describe": { "command": "kubectl describe -n {{NAMESPACE}} {{POD}}" },
+                "set_image": { "command": "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}}" }
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.overrides.logs.is_some());
+        assert!(config.overrides.shell.is_some());
+        assert!(config.overrides.describe.is_some());
+        assert!(config.overrides.yaml.is_none());
+        assert!(config.overrides.set_image.is_some());
+        assert!(config.overrides.port_forward.is_none());
+        assert!(config.overrides.previous_logs.is_none());
+
+        // Verify render
+        let logs_override = config.overrides.logs.as_ref().unwrap();
+        let rendered = logs_override.render("default", "my-pod", None, Some("ctx"));
+        assert_eq!(rendered, "stern default/my-pod");
+        assert_eq!(logs_override.needs_pause, Some(false));
+    }
+
+    #[test]
+    fn command_overrides_default_empty() {
+        let config = Config::default();
+        assert!(config.overrides.logs.is_none());
+        assert!(config.overrides.previous_logs.is_none());
+        assert!(config.overrides.shell.is_none());
+        assert!(config.overrides.describe.is_none());
+        assert!(config.overrides.yaml.is_none());
+        assert!(config.overrides.set_image.is_none());
+        assert!(config.overrides.port_forward.is_none());
+    }
+
+    #[test]
+    fn command_override_port_forward_with_ports_template() {
+        let override_cmd = CommandOverride {
+            command:
+                "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}"
+                    .to_string(),
+            needs_pause: Some(false),
+        };
+        let rendered = override_cmd.render("default", "my-pod", None, Some("my-cluster"));
+        // {{PORTS}} is NOT replaced by render() — it's replaced in build_port_forward_cmd
+        assert_eq!(
+            rendered,
+            "kubectl port-forward -n default my-pod {{PORTS}} --context my-cluster"
+        );
     }
 }
