@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "k9t"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1167,7 +1167,7 @@ dependencies = [
 
 [[package]]
 name = "k9t-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "k9t-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "k9t-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossterm",
