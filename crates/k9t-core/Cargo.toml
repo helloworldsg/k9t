@@ -1,0 +1,17 @@
+[package]
+name = "k9t-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
+futures = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }

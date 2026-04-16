@@ -1,0 +1,26 @@
+[package]
+name = "k9t"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "k9t"
+path = "src/main.rs"
+
+[[example]]
+name = "bench_memory"
+path = "../../examples/bench_memory.rs"
+
+[dependencies]
+k9t-app = { path = "../k9t-app" }
+k9t-core = { path = "../k9t-core" }
+k9t-ui = { path = "../k9t-ui" }
+ratatui = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+clap = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream"] }
+futures = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }

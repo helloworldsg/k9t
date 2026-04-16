@@ -1,0 +1,462 @@
+use std::sync::Arc;
+
+use k8s_openapi::api::{
+    apps::v1::Deployment,
+    core::v1::{Event, Node, Pod, Service},
+};
+use kube::ResourceExt;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceType {
+    Pods,
+    Deployments,
+    Services,
+    Nodes,
+    Events,
+}
+
+impl ResourceType {
+    pub fn title(&self) -> &'static str {
+        match self {
+            ResourceType::Pods => "Pods",
+            ResourceType::Deployments => "Deployments",
+            ResourceType::Services => "Services",
+            ResourceType::Nodes => "Nodes",
+            ResourceType::Events => "Events",
+        }
+    }
+}
+
+// ContainerDetail — per-container status extracted from pod.status.container_statuses
+
+#[derive(Debug, Clone)]
+pub struct ContainerDetail {
+    pub name: String,
+    pub ready: bool,
+    pub restart_count: u32,
+    /// Current state: "Running", "Waiting", "Terminated", or "Unknown"
+    pub status: String,
+    /// Human-readable reason/message if the container is waiting or terminated
+    pub reason: String,
+    /// Container image
+    pub image: String,
+}
+
+// PodInfo
+
+#[derive(Debug, Clone)]
+pub struct PodInfo {
+    pub namespace: String,
+    pub name: String,
+    pub ready: String,
+    pub status: String,
+    pub restarts: u32,
+    pub age: String,
+    /// Container names from the pod spec (for exec/shell into specific containers).
+    pub containers: Vec<String>,
+    /// Per-container status details (for expanded container view).
+    pub container_details: Vec<ContainerDetail>,
+}
+
+impl From<&Pod> for PodInfo {
+    fn from(pod: &Pod) -> Self {
+        let namespace = pod.namespace().unwrap_or_default();
+        let name = pod.name_any();
+
+        let spec_containers = pod.spec.as_ref().map(|s| s.containers.len()).unwrap_or(0);
+
+        // Extract container names for shell/exec support
+        let containers: Vec<String> = pod
+            .spec
+            .as_ref()
+            .map(|s| s.containers.iter().map(|c| c.name.clone()).collect())
+            .unwrap_or_default();
+
+        let (ready_count, restarts) = pod
+            .status
+            .as_ref()
+            .and_then(|s| s.container_statuses.as_ref())
+            .map(|statuses| {
+                let ready = statuses.iter().filter(|cs| cs.ready).count();
+                let restarts: u32 = statuses.iter().map(|cs| cs.restart_count as u32).sum();
+                (ready, restarts)
+            })
+            .unwrap_or((0, 0));
+
+        // Extract per-container status details
+        let container_details: Vec<ContainerDetail> = pod
+            .status
+            .as_ref()
+            .and_then(|s| s.container_statuses.as_ref())
+            .map(|statuses| {
+                statuses
+                    .iter()
+                    .map(|cs| {
+                        let (state_str, reason_str) = cs
+                            .state
+                            .as_ref()
+                            .map(|s| {
+                                if let Some(_running) = &s.running {
+                                    ("Running".to_string(), String::new())
+                                } else if let Some(waiting) = &s.waiting {
+                                    let reason =
+                                        waiting.reason.as_deref().unwrap_or("Waiting").to_string();
+                                    (reason.clone(), reason)
+                                } else if let Some(terminated) = &s.terminated {
+                                    let reason = terminated
+                                        .reason
+                                        .as_deref()
+                                        .unwrap_or("Terminated")
+                                        .to_string();
+                                    (reason.clone(), reason)
+                                } else {
+                                    ("Unknown".to_string(), String::new())
+                                }
+                            })
+                            .unwrap_or(("Unknown".to_string(), String::new()));
+
+                        ContainerDetail {
+                            name: cs.name.clone(),
+                            ready: cs.ready,
+                            restart_count: cs.restart_count as u32,
+                            status: state_str,
+                            reason: reason_str,
+                            image: cs.image.clone(),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let ready = if spec_containers == 0 {
+            "0/0".to_string()
+        } else {
+            format!("{ready_count}/{spec_containers}")
+        };
+
+        let status = derive_pod_status(pod);
+
+        let age = pod
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|ts| format_age(&ts.0))
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            namespace,
+            name,
+            ready,
+            status,
+            restarts,
+            age,
+            containers,
+            container_details,
+        }
+    }
+}
+
+fn derive_pod_status(pod: &Pod) -> String {
+    let phase = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.phase.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    if phase != "Running" {
+        return phase;
+    }
+
+    let has_crash_loop = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .is_some_and(|statuses| {
+            statuses.iter().any(|cs| {
+                cs.state
+                    .as_ref()
+                    .and_then(|s| s.waiting.as_ref())
+                    .is_some_and(|w| w.reason.as_ref().is_some_and(|r| r == "CrashLoopBackOff"))
+            })
+        });
+
+    if has_crash_loop {
+        return "CrashLoopBackOff".to_string();
+    }
+
+    phase
+}
+
+impl From<&Arc<Pod>> for PodInfo {
+    fn from(pod: &Arc<Pod>) -> Self {
+        PodInfo::from(pod.as_ref())
+    }
+}
+
+// NodeInfo
+
+#[derive(Debug, Clone)]
+pub struct NodeInfo {
+    pub name: String,
+    pub status: String,
+    pub capacity_cpu: String,
+    pub capacity_mem: String,
+    pub age: String,
+}
+
+impl From<&Node> for NodeInfo {
+    fn from(node: &Node) -> Self {
+        let name = node.name_any();
+
+        let status = node
+            .status
+            .as_ref()
+            .and_then(|s| s.conditions.as_ref())
+            .and_then(|conditions| {
+                conditions.iter().find(|c| c.type_ == "Ready").map(|c| {
+                    if c.status == "True" {
+                        "Ready"
+                    } else {
+                        "NotReady"
+                    }
+                })
+            })
+            .unwrap_or("Unknown")
+            .to_string();
+
+        let (capacity_cpu, capacity_mem) = node
+            .status
+            .as_ref()
+            .and_then(|s| s.capacity.as_ref())
+            .map(|cap| {
+                let cpu = cap.get("cpu").map(|q| q.0.clone()).unwrap_or_default();
+                let mem = cap.get("memory").map(|q| q.0.clone()).unwrap_or_default();
+                (cpu, mem)
+            })
+            .unwrap_or_default();
+
+        let age = node
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|ts| format_age(&ts.0))
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            name,
+            status,
+            capacity_cpu,
+            capacity_mem,
+            age,
+        }
+    }
+}
+
+impl From<&Arc<Node>> for NodeInfo {
+    fn from(node: &Arc<Node>) -> Self {
+        NodeInfo::from(node.as_ref())
+    }
+}
+
+// DeploymentInfo
+
+#[derive(Debug, Clone)]
+pub struct DeploymentInfo {
+    pub namespace: String,
+    pub name: String,
+    pub ready: String,
+    pub up_to_date: i32,
+    pub available: i32,
+    pub age: String,
+}
+
+impl From<&Deployment> for DeploymentInfo {
+    fn from(deploy: &Deployment) -> Self {
+        let namespace = deploy.namespace().unwrap_or_default();
+        let name = deploy.name_any();
+
+        let replicas = deploy.status.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+        let ready_replicas = deploy
+            .status
+            .as_ref()
+            .and_then(|s| s.ready_replicas)
+            .unwrap_or(0);
+        let up_to_date = deploy
+            .status
+            .as_ref()
+            .and_then(|s| s.updated_replicas)
+            .unwrap_or(0);
+        let available = deploy
+            .status
+            .as_ref()
+            .and_then(|s| s.available_replicas)
+            .unwrap_or(0);
+
+        let ready = format!("{ready_replicas}/{replicas}");
+
+        let age = deploy
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|ts| format_age(&ts.0))
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            namespace,
+            name,
+            ready,
+            up_to_date,
+            available,
+            age,
+        }
+    }
+}
+
+impl From<&Arc<Deployment>> for DeploymentInfo {
+    fn from(deploy: &Arc<Deployment>) -> Self {
+        DeploymentInfo::from(deploy.as_ref())
+    }
+}
+
+// ServiceInfo
+
+#[derive(Debug, Clone)]
+pub struct ServiceInfo {
+    pub namespace: String,
+    pub name: String,
+    pub service_type: String,
+    pub cluster_ip: String,
+    pub ports: String,
+    pub age: String,
+}
+
+impl From<&Service> for ServiceInfo {
+    fn from(svc: &Service) -> Self {
+        let namespace = svc.namespace().unwrap_or_default();
+        let name = svc.name_any();
+
+        let service_type = svc
+            .spec
+            .as_ref()
+            .and_then(|s| s.type_.clone())
+            .unwrap_or_else(|| "ClusterIP".to_string());
+
+        let cluster_ip = svc
+            .spec
+            .as_ref()
+            .and_then(|s| s.cluster_ip.clone())
+            .unwrap_or_default();
+
+        let ports = svc
+            .spec
+            .as_ref()
+            .and_then(|s| s.ports.as_ref())
+            .map(|ports| {
+                ports
+                    .iter()
+                    .map(|p| {
+                        let port = p.port;
+                        let proto = p.protocol.as_deref().unwrap_or("TCP");
+                        format!("{port}/{proto}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+
+        let age = svc
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|ts| format_age(&ts.0))
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            namespace,
+            name,
+            service_type,
+            cluster_ip,
+            ports,
+            age,
+        }
+    }
+}
+
+impl From<&Arc<Service>> for ServiceInfo {
+    fn from(svc: &Arc<Service>) -> Self {
+        ServiceInfo::from(svc.as_ref())
+    }
+}
+
+// EventInfo
+
+#[derive(Debug, Clone)]
+pub struct EventInfo {
+    pub namespace: String,
+    pub event_type: String,
+    pub reason: String,
+    pub message: String,
+    pub involved_object: String,
+    pub time: String,
+}
+
+impl From<&Event> for EventInfo {
+    fn from(ev: &Event) -> Self {
+        let namespace = ev.namespace().unwrap_or_default();
+
+        let event_type = ev.type_.clone().unwrap_or_else(|| "Normal".to_string());
+
+        let reason = ev.reason.clone().unwrap_or_default();
+
+        let message = ev.message.clone().unwrap_or_default();
+
+        let obj = &ev.involved_object;
+        let kind = obj.kind.as_deref().unwrap_or("Unknown").to_lowercase();
+        let name = obj.name.as_deref().unwrap_or("unknown");
+        let involved_object = format!("{kind}/{name}");
+
+        let time = ev
+            .last_timestamp
+            .as_ref()
+            .map(|ts| format_age(&ts.0))
+            .or_else(|| ev.event_time.as_ref().map(|ts| format_age(&ts.0)))
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            namespace,
+            event_type,
+            reason,
+            message,
+            involved_object,
+            time,
+        }
+    }
+}
+
+impl From<&Arc<Event>> for EventInfo {
+    fn from(ev: &Arc<Event>) -> Self {
+        EventInfo::from(ev.as_ref())
+    }
+}
+
+// Helpers
+
+fn format_age(created: &jiff::Timestamp) -> String {
+    let now = jiff::Timestamp::now();
+    let span = match now.since(*created) {
+        Ok(s) => s,
+        Err(_) => return "Unknown".to_string(),
+    };
+
+    let days = span.get_days();
+    let hours = span.get_hours();
+    let minutes = span.get_minutes();
+
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "k9t-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ratatui = { workspace = true }
+ratatui-crossterm = { workspace = true }
+crossterm = { workspace = true }
+k9t-core = { path = "../k9t-core" }
+k9t-app = { path = "../k9t-app" }
+jiff = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
