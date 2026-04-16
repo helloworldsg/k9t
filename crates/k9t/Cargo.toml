@@ -9,10 +9,6 @@ license.workspace = true
 name = "k9t"
 path = "src/main.rs"
 
-[[example]]
-name = "bench_memory"
-path = "../../examples/bench_memory.rs"
-
 [dependencies]
 k9t-app = { path = "../k9t-app" }
 k9t-core = { path = "../k9t-core" }
