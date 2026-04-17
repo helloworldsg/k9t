@@ -506,9 +506,7 @@ impl App {
                 let total = self.table_rows().len();
                 self.selected_index = (self.selected_index + 1).min(total.saturating_sub(1));
             }
-            MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                if mouse.row >= 2 =>
-            {
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) if mouse.row >= 2 => {
                 let clicked_row = (mouse.row - 2) as usize;
                 let total_rows = self.table_rows().len();
                 if clicked_row < total_rows {
