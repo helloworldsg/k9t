@@ -94,8 +94,8 @@ filters:
 
 # Built-in command templates — override or replace any of these
 commands_builtin:
-  logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl"
-  previous_logs: "kubectl logs --previous -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl"
+  logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl"
+  previous_logs: "kubectl logs --previous -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl"
   shell: "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh"
   describe: "kubectl describe pod -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes"
   yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes"

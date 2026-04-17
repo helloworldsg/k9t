@@ -142,15 +142,15 @@ impl CommandTemplate {
 /// Example config:
 /// ```yaml
 /// commands:
-///   logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl"
+///   logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl"
 ///   yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes"
 /// ```
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct Commands {
-    /// Tail logs. Default: `kubectl logs -f -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl`
+    /// Tail logs. Default: `kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl`
     pub logs: String,
-    /// Previous logs. Default: `kubectl logs --previous -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl`
+    /// Previous logs. Default: `kubectl logs --previous -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl`
     pub previous_logs: String,
     /// Shell into pod. Default: `kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh`
     /// Fallback shells (/bin/sh, /bin/bash) are tried automatically.
@@ -170,8 +170,8 @@ pub struct Commands {
 impl Default for Commands {
     fn default() -> Self {
         Self {
-            logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl".to_string(),
-            previous_logs: "kubectl logs --previous -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl".to_string(),
+            logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl".to_string(),
+            previous_logs: "kubectl logs --previous -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl".to_string(),
             shell: "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh".to_string(),
             describe: "kubectl describe pod -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
             yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
@@ -519,6 +519,7 @@ commands:
             .logs
             .replace("{{NAMESPACE}}", "default")
             .replace("{{POD}}", "my-pod")
+            .replace("{{CONTAINER}}", "my-container")
             .replace("{{CONTEXT}}", "my-cluster");
         assert!(rendered.contains("kubectl logs -f"));
         assert!(rendered.contains("default"));
