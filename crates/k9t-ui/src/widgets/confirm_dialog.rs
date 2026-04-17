@@ -57,6 +57,7 @@ pub fn render_confirm_dialog(
 /// Uses a multi-line layout: label line(s) on top, input field on its own line,
 /// so long resource names don't push the cursor off screen.
 /// Keyboard hints are shown in the footer, not in the dialog.
+#[allow(clippy::too_many_arguments)]
 pub fn render_input_dialog(
     frame: &mut Frame,
     area: Rect,

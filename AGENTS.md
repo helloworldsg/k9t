@@ -6,14 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                        # Debug build
-cargo build --release              # Release build (~8MB binary)
+cargo build --release              # Release build 
 cargo test --workspace             # Run all tests
-cargo test -p k9t-app              # Run tests for a specific crate
 cargo fmt --all -- --check         # Check formatting
 cargo clippy --workspace -- -D warnings  # Lint
-cargo run -- --context my-cluster  # Run with kube context
-cargo run -- --namespace default   # Run with specific namespace
-cargo run -- --regex-namespace-pods "plt/api-.*"  # Filter pods by regex
 ```
 
 ## Architecture

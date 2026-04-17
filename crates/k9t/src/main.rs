@@ -475,64 +475,64 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     command_palette::render_command_palette(
-                        frame, area, query, &items, *index, &theme, app.tick_count % 2 == 1,
+                        frame,
+                        area,
+                        query,
+                        &items,
+                        *index,
+                        &theme,
+                        app.tick_count % 2 == 1,
                     );
                 }
                 _ => {
                     // Show contextual hints based on mode
                     // Universal hints (q, /, ?) only make sense in Normal mode
-                    let (context_hints, show_universal): (&[(&str, &str)], bool) =
-                        match &app.mode {
-                            Mode::ConfirmAction(_) => (
-                                &[("y", "confirm"), ("Esc", "cancel")],
-                                false,
-                            ),
-                            Mode::ContainerPicker(_) => (
-                                &[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")],
-                                false,
-                            ),
-                            Mode::ContextPicker => (
-                                &[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")],
-                                false,
-                            ),
-                            Mode::NamespacePicker => (
-                                &[
-                                    ("Space", "toggle"),
-                                    ("a", "all"),
-                                    ("Enter", "apply"),
-                                    ("Esc", "cancel"),
-                                ],
-                                false,
-                            ),
-                            Mode::ContainerActions { .. } => (
-                                &[
-                                    ("type", "filter"),
-                                    ("↑/↓", "nav"),
-                                    ("Enter", "sel"),
-                                    ("Esc", "back"),
-                                ],
-                                false,
-                            ),
-                            Mode::SetImageInput => (
-                                &[("Enter", "apply"), ("Ctrl+U", "clear"), ("Esc", "back")],
-                                false,
-                            ),
-                            Mode::PortForwardInput => (
-                                &[("Enter", "apply"), ("Ctrl+U", "clear"), ("Esc", "back")],
-                                false,
-                            ),
-                            Mode::Help => (&[("Esc", "close")], false),
-                            Mode::Normal => (
-                                &[
-                                    ("↑/↓", "nav"),
-                                    ("Enter", "open"),
-                                    (",", "sort"),
-                                    ("w", "ide"),
-                                ],
-                                true,
-                            ),
-                            _ => (&[], true), // Default to showing universal hints
-                        };
+                    let (context_hints, show_universal): (&[(&str, &str)], bool) = match &app.mode {
+                        Mode::ConfirmAction(_) => (&[("y", "confirm"), ("Esc", "cancel")], false),
+                        Mode::ContainerPicker(_) => {
+                            (&[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")], false)
+                        }
+                        Mode::ContextPicker => {
+                            (&[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")], false)
+                        }
+                        Mode::NamespacePicker => (
+                            &[
+                                ("Space", "toggle"),
+                                ("a", "all"),
+                                ("Enter", "apply"),
+                                ("Esc", "cancel"),
+                            ],
+                            false,
+                        ),
+                        Mode::ContainerActions { .. } => (
+                            &[
+                                ("type", "filter"),
+                                ("↑/↓", "nav"),
+                                ("Enter", "sel"),
+                                ("Esc", "back"),
+                            ],
+                            false,
+                        ),
+                        Mode::SetImageInput => (
+                            &[("Enter", "apply"), ("Ctrl+U", "clear"), ("Esc", "back")],
+                            false,
+                        ),
+                        Mode::PortForwardInput => (
+                            &[("Enter", "apply"), ("Ctrl+U", "clear"), ("Esc", "back")],
+                            false,
+                        ),
+                        Mode::Help => (&[("Esc", "close")], false),
+                        Mode::Normal => (
+                            &[
+                                ("↑/↓", "nav"),
+                                ("Enter", "open"),
+                                (",", "sort"),
+                                ("w", "ide"),
+                            ],
+                            true,
+                        ),
+                        _ => (&[], true), // Default to showing universal hints
+                    };
                     footer::render_footer(
                         frame,
                         layout.footer,

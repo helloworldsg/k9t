@@ -35,10 +35,7 @@ pub fn render_footer(
     if tick_count > 0 {
         let spinner_idx = (tick_count % (SPINNER_FRAMES.len() as u64)) as usize;
         let spinner = SPINNER_FRAMES[spinner_idx];
-        spans.push(Span::styled(
-            format!(" {} ", spinner),
-            theme.fg_muted(),
-        ));
+        spans.push(Span::styled(format!(" {} ", spinner), theme.fg_muted()));
     }
 
     for (key, label) in context_hints {

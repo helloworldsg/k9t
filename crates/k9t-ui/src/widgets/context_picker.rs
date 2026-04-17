@@ -13,6 +13,7 @@ use crate::theme::Theme;
 /// - `current` — the currently active context name (highlighted with a marker)
 /// - `picker_index` — index of the highlighted item in the filtered list
 /// - `search` — current search/filter string
+#[allow(clippy::too_many_arguments)]
 pub fn render_context_picker(
     frame: &mut Frame,
     area: Rect,
@@ -46,11 +47,8 @@ pub fn render_context_picker(
 
     frame.render_widget(Clear, popup_area);
 
-    let [search_area, content_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .areas(popup_area);
+    let [search_area, content_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(popup_area);
 
     let block = Block::bordered()
         .title("Select Context")
