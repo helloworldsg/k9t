@@ -391,8 +391,26 @@ fn drain_ctrl_c_events() {
     }
 }
 
+/// RAII guard that restores the terminal when dropped, ensuring cleanup
+/// even if the main loop exits via panic, early return, or normal quit.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        ratatui::restore();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install a panic hook that restores the terminal before printing the panic.
+    // Without this, a panic leaves the terminal in raw/alternate-screen mode.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        default_panic(info);
+    }));
+
     let cli = Cli::parse();
 
     let config = Config::load().unwrap_or_else(|e| {
@@ -419,6 +437,9 @@ async fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     // Enable mouse capture for click and scroll support
     crossterm::execute!(std::io::stderr(), crossterm::event::EnableMouseCapture).unwrap_or(());
+
+    // Guard restores the terminal when dropped — even on panic or early return.
+    let _guard = TerminalGuard;
     let mut theme = Theme::auto();
 
     let mut app = App::with_commands(
@@ -1060,6 +1081,11 @@ async fn main() -> Result<()> {
         })?;
     }
 
-    ratatui::restore();
+    // Drop the EventStream explicitly so crossterm's background reader thread
+    // stops before we restore the terminal. This prevents the reader thread
+    // from interfering with the terminal state after restore.
+    drop(events);
+
+    // TerminalGuard drops here and calls ratatui::restore().
     Ok(())
 }
