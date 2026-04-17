@@ -47,6 +47,17 @@ impl std::fmt::Display for ContainerPortInfo {
     }
 }
 
+/// A simplified volume mount representation.
+#[derive(Debug, Clone)]
+pub struct VolumeMount {
+    /// Name of the volume being mounted.
+    pub name: String,
+    /// Path where the volume is mounted inside the container.
+    pub mount_path: String,
+    /// Whether the volume is mounted read-only.
+    pub read_only: bool,
+}
+
 // ContainerDetail — per-container status extracted from pod.status.container_statuses
 
 #[derive(Debug, Clone)]
@@ -62,6 +73,8 @@ pub struct ContainerDetail {
     pub image: String,
     /// Container ports from the pod spec.
     pub ports: Vec<ContainerPortInfo>,
+    /// Volume mounts for this container.
+    pub volume_mounts: Vec<VolumeMount>,
     /// True if this is an init container.
     pub is_init: bool,
 }
@@ -130,6 +143,25 @@ fn container_detail_from_status(
         })
         .unwrap_or_default();
 
+    let volume_mounts: Vec<VolumeMount> = spec_containers
+        .iter()
+        .find(|sc| sc.name == cs.name)
+        .map(|sc| {
+            sc.volume_mounts
+                .as_ref()
+                .map(|vms| {
+                    vms.iter()
+                        .map(|vm| VolumeMount {
+                            name: vm.name.clone(),
+                            mount_path: vm.mount_path.clone(),
+                            read_only: vm.read_only.unwrap_or(false),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
     ContainerDetail {
         name: cs.name.clone(),
         ready: cs.ready,
@@ -138,6 +170,7 @@ fn container_detail_from_status(
         reason: reason_str,
         image: cs.image.clone(),
         ports,
+        volume_mounts,
         is_init,
     }
 }

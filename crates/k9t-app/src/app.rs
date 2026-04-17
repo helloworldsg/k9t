@@ -378,6 +378,22 @@ impl App {
         )
     }
 
+    pub fn build_list_volumes_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+        volumes: &str,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.list_volumes,
+            namespace,
+            pod_name,
+            container,
+            &[("VOLUMES", volumes)],
+        )
+    }
+
     /// Build the flattened table rows (pods + expanded containers) from the current pod list.
     /// This is the view the table widget renders and the selection index navigates.
     /// When a search filter is active, only matching pods (and their containers) are shown.
@@ -939,6 +955,7 @@ impl App {
                     ContainerAction::SetImage,
                     ContainerAction::PortForward,
                     ContainerAction::Debug,
+                    ContainerAction::ListVolumes,
                 ];
                 for cmd in &self.custom_commands {
                     if cmd.matches(&pod.namespace, &pod.name, None) {
@@ -1122,12 +1139,29 @@ impl App {
                             Some(&container.name),
                         ));
                     }
+                    ContainerAction::ListVolumes => {
+                        let volumes = container.volume_mounts.iter()
+                            .map(|v| v.mount_path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        self.pending_shell = Some(self.build_list_volumes_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                            &volumes,
+                        ));
+                    }
                     ContainerAction::Custom(cmd) => {
+                        let volumes = container.volume_mounts.iter()
+                            .map(|v| v.mount_path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         let rendered = cmd.render(
                             &pod.namespace,
                             &pod.name,
                             Some(&container.name),
                             self.context_name.as_deref(),
+                            Some(&volumes),
                         );
                         self.pending_shell = Some(ShellCommand::bash(&rendered));
                     }
@@ -1659,14 +1693,25 @@ impl App {
                     }
 
                     // If a container row is selected, use its name; otherwise use the first container
-                    let container = self
+                    let container_name = self
                         .selected_container_name()
                         .or_else(|| pod.containers.first().cloned());
+                    let volumes = container_name
+                        .as_ref()
+                        .and_then(|c| pod.container_details.iter().find(|d| &d.name == c))
+                        .map(|c| {
+                            c.volume_mounts.iter()
+                                .map(|v| v.mount_path.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .unwrap_or_default();
                     let rendered = custom_cmd.render(
                         &pod.namespace,
                         &pod.name,
-                        container.as_deref(),
+                        container_name.as_deref(),
                         self.context_name.as_deref(),
+                        Some(&volumes),
                     );
 
                     // Wrap with bash -c so pipes, redirects, and shell features work
@@ -1985,6 +2030,7 @@ mod tests {
                     name: Some("http".to_string()),
                     protocol: "TCP".to_string(),
                 }],
+                volume_mounts: vec![],
                 is_init: false,
             }],
         }

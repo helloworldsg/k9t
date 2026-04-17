@@ -102,6 +102,7 @@ commands_builtin:
   set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}"
   port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}"
   debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}"
+  list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \\; 2>/dev/null | head -100; done' | less"
 
 # Custom commands — appear in the action dialog and command palette
 commands:
@@ -113,12 +114,14 @@ commands:
 
 ### Custom command fields
 
-| Field           | Description                                                                    |
-|-----------------|--------------------------------------------------------------------------------|
-| `name`          | Command name (invoked with `:name`)                                            |
-| `match_pattern` | `namespace/pod_regex/container_regex` filter. Omit to match all.               |
-| `command`       | Shell template with `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}` |
-| `description`   | Short help text shown in the command palette                                   |
+| Field           | Description                                                                                              |
+|-----------------|----------------------------------------------------------------------------------------------------------|
+| `name`          | Command name (invoked with `:name`)                                                                      |
+| `match_pattern` | `namespace/pod_regex/container_regex` filter. Omit to match all.                                       |
+| `command`       | Shell template with `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`, `{{VOLUMES}}`           |
+| `description`   | Short help text shown in the command palette                                                             |
+
+The `{{VOLUMES}}` variable expands to space-separated mount paths from the container's volume mounts (e.g., `/data /config /logs`).
 
 ### Match patterns
 

@@ -34,6 +34,7 @@ pub enum ContainerAction {
     SetImage,
     PortForward,
     Debug,
+    ListVolumes,
     Custom(CustomCommand),
 }
 
@@ -49,6 +50,7 @@ impl ContainerAction {
             ContainerAction::SetImage => "Set image".to_string(),
             ContainerAction::PortForward => "Port forward".to_string(),
             ContainerAction::Debug => "Debug".to_string(),
+            ContainerAction::ListVolumes => "List volumes".to_string(),
             ContainerAction::Custom(cmd) => format!(
                 ":{} {}",
                 cmd.name,

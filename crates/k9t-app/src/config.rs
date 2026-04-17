@@ -79,12 +79,14 @@ impl CustomCommand {
         pod_name: &str,
         container: Option<&str>,
         context: Option<&str>,
+        volumes: Option<&str>,
     ) -> String {
         let mut cmd = self.command.clone();
         cmd = cmd.replace("{{NAMESPACE}}", namespace);
         cmd = cmd.replace("{{POD}}", pod_name);
         cmd = cmd.replace("{{CONTAINER}}", container.unwrap_or(""));
         cmd = cmd.replace("{{CONTEXT}}", context.unwrap_or(""));
+        cmd = cmd.replace("{{VOLUMES}}", volumes.unwrap_or(""));
         cmd
     }
 }
@@ -137,7 +139,7 @@ impl CommandTemplate {
 /// Built-in command templates. Each has a sensible default that can be overridden in config.
 ///
 /// Template variables: `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`.
-/// Additional: `{{IMAGE}}` for set-image, `{{PORTS}}` for port-forward.
+/// Additional: `{{IMAGE}}` for set-image, `{{PORTS}}` for port-forward, `{{VOLUMES}}` for list-volumes.
 ///
 /// Example config:
 /// ```yaml
@@ -165,6 +167,8 @@ pub struct Commands {
     pub port_forward: String,
     /// Debug pod. Default: `kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}`
     pub debug: String,
+    /// List volumes. Default: lists files in all mounted volumes using `{{VOLUMES}}`
+    pub list_volumes: String,
 }
 
 impl Default for Commands {
@@ -178,6 +182,7 @@ impl Default for Commands {
             set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}".to_string(),
             port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}".to_string(),
             debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}".to_string(),
+            list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \\; 2>/dev/null | head -100; done' | less".to_string(),
         }
     }
 }
@@ -414,7 +419,7 @@ mod tests {
                     .to_string(),
             description: None,
         };
-        let rendered = cmd.render("plt", "api-1234", Some("api"), Some("my-cluster"));
+        let rendered = cmd.render("plt", "api-1234", Some("api"), Some("my-cluster"), None);
         assert_eq!(
             rendered,
             "kubectl port-forward -n plt api-1234 8080:8080 --context my-cluster"
@@ -474,7 +479,7 @@ commands:
         match parsed {
             crate::command::Command::Custom(c) => {
                 assert_eq!(c.name, "pf");
-                let rendered = c.render("default", "my-pod", None, Some("my-ctx"));
+                let rendered = c.render("default", "my-pod", None, Some("my-ctx"), None);
                 assert_eq!(
                     rendered,
                     "kubectl port-forward -n default my-pod 8080:8080 --context my-ctx"
