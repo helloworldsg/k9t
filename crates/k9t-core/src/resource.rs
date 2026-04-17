@@ -76,6 +76,8 @@ pub struct PodInfo {
     pub status: String,
     pub restarts: u32,
     pub age: String,
+    pub pod_ip: String,
+    pub node_name: String,
     /// Container names from the pod spec (for exec/shell into specific containers).
     pub containers: Vec<String>,
     /// Per-container status details (for expanded container view).
@@ -219,6 +221,18 @@ impl From<&Pod> for PodInfo {
             .map(|ts| format_age(&ts.0))
             .unwrap_or_else(|| "Unknown".to_string());
 
+        let pod_ip = pod
+            .status
+            .as_ref()
+            .and_then(|status| status.pod_ip.clone())
+            .unwrap_or_else(|| "-".to_string());
+
+        let node_name = pod
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.node_name.clone())
+            .unwrap_or_else(|| "-".to_string());
+
         Self {
             namespace,
             name,
@@ -226,6 +240,8 @@ impl From<&Pod> for PodInfo {
             status,
             restarts,
             age,
+            pod_ip,
+            node_name,
             containers,
             container_details,
         }

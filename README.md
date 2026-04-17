@@ -32,6 +32,7 @@ Think of it as the essential 20% of `k9s`, built in Rust.
 ## Features
 
 - **Live pod list** — watched via Kubernetes reflector, updates in real time, sortable by namespace/name/age/status
+- **Wide pod columns** — toggle `w` to show pod IP and node placement when you have the terminal width for it
 - **6 color themes** — Tokyo Night, Nord, Dracula, Gruvbox, Catppuccin Mocha, Light + Monochrome (with `NO_COLOR=1`)
 - **All commands configurable** — built-in commands (logs, shell, describe, yaml, debug, etc.) are template strings in YAML — override or replace any of them
 - **Action dialog with type-to-filter** — type to quickly filter the actions list; no shortcut keys to remember
@@ -85,7 +86,7 @@ k9t loads config from the first file found (in order):
 
 ```yaml
 theme: tokyo_night
-refresh_rate_ms: 1000
+wide_pod_columns: false
 borderless: true
 filters:
   - "plt/kong.*"

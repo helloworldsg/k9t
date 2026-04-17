@@ -23,6 +23,13 @@ pub enum SortConfig {
     StatusDesc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PodTableMode {
+    #[default]
+    Compact,
+    Wide,
+}
+
 /// A flattened table row for the pod list view.
 /// Pods appear as top-level rows; containers appear as indented sub-rows
 /// when their parent pod is expanded.
@@ -160,6 +167,8 @@ pub struct App {
     pub port_forward_container: Option<String>,
     /// Current sort configuration for the pod list.
     pub sort_config: SortConfig,
+    /// Visible pod table column set.
+    pub pod_table_mode: PodTableMode,
     /// Actions list for the container actions dialog.
     pub container_actions: Vec<ContainerAction>,
     /// Selected index in the container actions dialog.
@@ -246,6 +255,7 @@ impl App {
             port_forward_pod: String::new(),
             port_forward_container: None,
             sort_config: SortConfig::default(),
+            pod_table_mode: PodTableMode::default(),
             container_actions: Vec::new(),
             container_actions_index: 0,
             commands_builtin,
@@ -384,7 +394,9 @@ impl App {
             // Filter by search query
             if let Some(ref query) = search_query {
                 let matches_pod = pod.name.to_lowercase().contains(query)
-                    || pod.namespace.to_lowercase().contains(query);
+                    || pod.namespace.to_lowercase().contains(query)
+                    || pod.node_name.to_lowercase().contains(query)
+                    || pod.pod_ip.to_lowercase().contains(query);
                 let matches_container = pod.container_details.iter().any(|c| {
                     c.name.to_lowercase().contains(query)
                         || c.status.to_lowercase().contains(query)
@@ -880,6 +892,12 @@ impl App {
             (KeyModifiers::SHIFT, KeyCode::Char('T')) => {
                 self.theme_index = (self.theme_index + 1) % self.theme_count;
             }
+            (KeyModifiers::NONE, KeyCode::Char('w')) => {
+                self.pod_table_mode = match self.pod_table_mode {
+                    PodTableMode::Compact => PodTableMode::Wide,
+                    PodTableMode::Wide => PodTableMode::Compact,
+                };
+            }
             // ── Sort cycle ──
             (KeyModifiers::NONE, KeyCode::Char(',')) => {
                 self.sort_config = match self.sort_config {
@@ -1246,7 +1264,7 @@ impl App {
 
     fn handle_help_key(&mut self, key: KeyEvent) {
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) | (_, KeyCode::Char('?')) => {
                 self.mode = Mode::Normal;
             }
             _ => {}
@@ -1934,5 +1952,73 @@ impl App {
         self.available_namespaces.clear();
         self.pods.clear();
         self.selected_index = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use k9t_core::ContainerPortInfo;
+
+    use super::*;
+
+    fn sample_pod() -> PodInfo {
+        PodInfo {
+            namespace: "default".to_string(),
+            name: "api-123".to_string(),
+            ready: "1/1".to_string(),
+            status: "Running".to_string(),
+            restarts: 0,
+            age: "5m".to_string(),
+            pod_ip: "10.42.0.15".to_string(),
+            node_name: "worker-a".to_string(),
+            containers: vec!["api".to_string()],
+            container_details: vec![ContainerDetail {
+                name: "api".to_string(),
+                ready: true,
+                restart_count: 0,
+                status: "Running".to_string(),
+                reason: String::new(),
+                image: "ghcr.io/example/api:latest".to_string(),
+                ports: vec![ContainerPortInfo {
+                    port: 8080,
+                    name: Some("http".to_string()),
+                    protocol: "TCP".to_string(),
+                }],
+                is_init: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn toggles_wide_pod_columns_with_w() {
+        let mut app = App::new(None);
+
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.pod_table_mode, PodTableMode::Wide);
+
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.pod_table_mode, PodTableMode::Compact);
+    }
+
+    #[test]
+    fn search_matches_wide_pod_fields() {
+        let mut app = App::new(None);
+        app.set_pods(vec![sample_pod()]);
+
+        app.mode = Mode::Search("worker-a".to_string());
+        assert_eq!(app.table_rows().len(), 1);
+
+        app.mode = Mode::Search("10.42.0.15".to_string());
+        assert_eq!(app.table_rows().len(), 1);
+
+        app.mode = Mode::Search("missing".to_string());
+        assert!(app.table_rows().is_empty());
     }
 }

@@ -5,7 +5,9 @@ use clap::Parser;
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 
-use k9t_app::{App, AppEvent, AsyncAction, Config, ConfirmContext, Mode, ShellCommand};
+use k9t_app::{
+    App, AppEvent, AsyncAction, Config, ConfirmContext, Mode, PodTableMode, ShellCommand,
+};
 use k9t_core::{
     PodReflector, create_client, delete_pod, discover_contexts, discover_namespaces,
     resolve_context_name, restart_deployment,
@@ -15,7 +17,7 @@ use k9t_ui::layout::is_terminal_too_small;
 use k9t_ui::theme::Theme;
 use k9t_ui::widgets::{
     command_palette, confirm_dialog, container_actions, container_picker, context_picker, footer,
-    header, namespace_bar, namespace_picker, resource_table, toast,
+    header, namespace_picker, resource_table, toast,
 };
 
 /// Fullscreen overlay modes that replace the entire view.
@@ -144,25 +146,9 @@ fn run_single_command(program: &str, args: &[String]) -> Option<i32> {
         .status();
 
     match status {
-        Ok(s) => {
-            let code = s.code();
-            if !s.success()
-                && code != Some(126)
-                && code != Some(127)
-                && !matches!(code, Some(130) | Some(141))
-            {
-                // 126/127 = shell not found (retry with fallbacks)
-                // 130 = Ctrl-C, 141 = SIGPIPE (normal exits, not errors)
-                eprintln!("\nk9t: command exited with code: {}", code.unwrap_or(-1));
-                eprintln!("Press Enter to return to k9t...");
-                let _ = std::io::stdin().read_line(&mut String::new());
-            }
-            code
-        }
+        Ok(s) => s.code(),
         Err(e) => {
             eprintln!("\nk9t: failed to run '{}': {}", program, e);
-            eprintln!("Press Enter to return to k9t...");
-            let _ = std::io::stdin().read_line(&mut String::new());
             None
         }
     }
@@ -241,6 +227,9 @@ async fn main() -> Result<()> {
         config.commands.clone(),
         config.commands_builtin.clone(),
     );
+    if config.wide_pod_columns {
+        app.pod_table_mode = PodTableMode::Wide;
+    }
     if let Some(ns) = cli.namespace.as_deref().or(config.namespace.as_deref()) {
         app.namespace_filter = ns.to_string();
     }
@@ -267,8 +256,9 @@ async fn main() -> Result<()> {
     app.set_available_contexts(available_contexts);
 
     let mut events = EventStream::new();
-    let refresh_rate = Duration::from_millis(config.refresh_rate_ms);
-    let mut tick = tokio::time::interval(refresh_rate);
+    // Fixed tick rate for UI updates (spinner, toast TTL, etc.)
+    // Kubernetes watch handles real-time pod updates, so this is just for UI responsiveness
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
 
     loop {
         tokio::select! {
@@ -440,15 +430,8 @@ async fn main() -> Result<()> {
                 &theme,
             );
 
-            // Skip namespace bar + resource table when a fullscreen overlay is active
+            // Skip resource table when a fullscreen overlay is active
             if !is_fullscreen_overlay(&app.mode) {
-                namespace_bar::render_namespace_bar(
-                    frame,
-                    layout.namespace_bar,
-                    &app.selected_namespaces,
-                    &app.active_namespaces(),
-                    &theme,
-                );
                 let rows = app.table_rows();
                 let title = app.table_title();
                 resource_table::render_pod_table(
@@ -457,6 +440,7 @@ async fn main() -> Result<()> {
                     &rows,
                     app.selected_index,
                     &title,
+                    app.pod_table_mode,
                     &theme,
                 );
             }
@@ -464,6 +448,7 @@ async fn main() -> Result<()> {
             // Context-sensitive footer / bottom bars
             match &app.mode {
                 Mode::Search(input) => {
+                    let cursor = if app.tick_count % 2 == 1 { "█" } else { " " };
                     let search_spans = ratatui::text::Line::from(vec![
                         ratatui::text::Span::styled(
                             "/",
@@ -472,7 +457,7 @@ async fn main() -> Result<()> {
                                 .add_modifier(ratatui::style::Modifier::BOLD),
                         ),
                         ratatui::text::Span::styled(input.to_string(), theme.fg_default()),
-                        ratatui::text::Span::styled("█", theme.accent_primary()),
+                        ratatui::text::Span::styled(cursor, theme.accent_primary()),
                     ]);
                     frame.render_widget(
                         ratatui::widgets::Paragraph::new(search_spans).style(theme.bg_overlay()),
@@ -490,37 +475,73 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     command_palette::render_command_palette(
-                        frame, area, query, &items, *index, &theme,
+                        frame, area, query, &items, *index, &theme, app.tick_count % 2 == 1,
                     );
                 }
                 _ => {
                     // Show contextual hints based on mode
-                    let context_hints: &[(&str, &str)] = match &app.mode {
-                        Mode::ContainerPicker(_) => {
-                            &[("Enter", "select"), ("j/k", "nav"), ("Esc", "cancel")]
-                        }
-                        Mode::ContextPicker => {
-                            &[("Enter", "select"), ("j/k", "nav"), ("Esc", "cancel")]
-                        }
-                        Mode::SetImageInput => {
-                            &[("Enter", "apply"), ("Esc", "cancel"), ("Ctrl+U", "clear")]
-                        }
-                        Mode::Help => &[("Esc/?", "close")],
-                        _ => &[
-                            ("j/k", "nav"),
-                            ("Enter", "expand"),
-                            ("l", "logs"),
-                            ("s", "shell"),
-                            ("f", "port-forward"),
-                            ("D", "debug"),
-                            ("i", "image"),
-                            (",", "sort"),
-                            ("K", "kill"),
-                            ("R", "restart"),
-                            ("?", "help"),
-                        ],
-                    };
-                    footer::render_footer(frame, layout.footer, mode_name, context_hints, &theme);
+                    // Universal hints (q, /, ?) only make sense in Normal mode
+                    let (context_hints, show_universal): (&[(&str, &str)], bool) =
+                        match &app.mode {
+                            Mode::ConfirmAction(_) => (
+                                &[("y", "confirm"), ("Esc", "cancel")],
+                                false,
+                            ),
+                            Mode::ContainerPicker(_) => (
+                                &[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")],
+                                false,
+                            ),
+                            Mode::ContextPicker => (
+                                &[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")],
+                                false,
+                            ),
+                            Mode::NamespacePicker => (
+                                &[
+                                    ("Space", "toggle"),
+                                    ("a", "all"),
+                                    ("Enter", "apply"),
+                                    ("Esc", "cancel"),
+                                ],
+                                false,
+                            ),
+                            Mode::ContainerActions { .. } => (
+                                &[
+                                    ("type", "filter"),
+                                    ("↑/↓", "nav"),
+                                    ("Enter", "sel"),
+                                    ("Esc", "back"),
+                                ],
+                                false,
+                            ),
+                            Mode::SetImageInput => (
+                                &[("Enter", "apply"), ("Ctrl+U", "clear"), ("Esc", "back")],
+                                false,
+                            ),
+                            Mode::PortForwardInput => (
+                                &[("Enter", "apply"), ("Ctrl+U", "clear"), ("Esc", "back")],
+                                false,
+                            ),
+                            Mode::Help => (&[("Esc", "close")], false),
+                            Mode::Normal => (
+                                &[
+                                    ("↑/↓", "nav"),
+                                    ("Enter", "open"),
+                                    (",", "sort"),
+                                    ("w", "ide"),
+                                ],
+                                true,
+                            ),
+                            _ => (&[], true), // Default to showing universal hints
+                        };
+                    footer::render_footer(
+                        frame,
+                        layout.footer,
+                        mode_name,
+                        context_hints,
+                        &theme,
+                        show_universal,
+                        app.tick_count,
+                    );
                 }
             }
 
@@ -558,6 +579,7 @@ async fn main() -> Result<()> {
                         app.namespace_picker_index,
                         &app.namespace_picker_search,
                         &theme,
+                        app.tick_count % 2 == 1,
                     );
                 }
                 Mode::ContextPicker => {
@@ -569,6 +591,7 @@ async fn main() -> Result<()> {
                         app.context_picker_index,
                         &app.context_picker_search,
                         &theme,
+                        app.tick_count % 2 == 1,
                     );
                 }
                 Mode::ContainerPicker(intent) => {
@@ -629,6 +652,7 @@ async fn main() -> Result<()> {
                         &pod_name,
                         &container_name,
                         &theme,
+                        app.tick_count % 2 == 1,
                     );
                 }
                 Mode::SetImageInput => {
@@ -645,8 +669,8 @@ async fn main() -> Result<()> {
                         &label,
                         input,
                         placeholder,
-                        "[Enter]apply  [Esc]cancel  [Ctrl+U]clear",
                         &theme,
+                        app.tick_count % 2 == 1,
                     );
                 }
                 Mode::PortForwardInput => {
@@ -671,8 +695,8 @@ async fn main() -> Result<()> {
                         &label,
                         input,
                         &placeholder,
-                        "[Enter]apply  [Esc]cancel  [Ctrl+U]clear",
                         &theme,
+                        app.tick_count % 2 == 1,
                     );
                 }
                 Mode::Help => {
@@ -706,15 +730,23 @@ async fn main() -> Result<()> {
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   Enter         ", emphasis),
-                            ratatui::text::Span::styled("Expand/collapse", dim),
+                            ratatui::text::Span::styled("Open row / actions", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   g/G Home/End  ", emphasis),
                             ratatui::text::Span::styled("Top/bottom", dim),
                         ]),
                         ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   PgUp/PgDn ^B/^F", emphasis),
+                            ratatui::text::Span::styled("Page up/down", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   Esc           ", emphasis),
                             ratatui::text::Span::styled("Back / close", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   q             ", emphasis),
+                            ratatui::text::Span::styled("Quit k9t", dim),
                         ]),
                         ratatui::text::Line::from(""),
                         // Actions
@@ -792,12 +824,20 @@ async fn main() -> Result<()> {
                             ratatui::text::Span::styled("   ,             ", emphasis),
                             ratatui::text::Span::styled("Cycle sort order", dim),
                         ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   w             ", emphasis),
+                            ratatui::text::Span::styled("Toggle wide columns", dim),
+                        ]),
                         ratatui::text::Line::from(""),
                         // Command Mode
                         ratatui::text::Line::from(ratatui::text::Span::styled(
                             " Command Mode  (press :)",
                             title,
                         )),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   :             ", cmd_style),
+                            ratatui::text::Span::styled("Open command palette", dim),
+                        ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   :q  :quit     ", cmd_style),
                             ratatui::text::Span::styled("Quit k9t", dim),
@@ -818,8 +858,12 @@ async fn main() -> Result<()> {
                             ratatui::text::Span::styled("Cycle theme", dim),
                         ]),
                         ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   ?             ", emphasis),
+                            ratatui::text::Span::styled("Open/close help", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   Ctrl-C        ", emphasis),
-                            ratatui::text::Span::styled("Quit k9t", dim),
+                            ratatui::text::Span::styled("Force quit", dim),
                         ]),
                     ];
 

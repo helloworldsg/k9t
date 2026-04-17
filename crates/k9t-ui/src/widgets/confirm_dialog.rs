@@ -9,6 +9,7 @@ use ratatui::{
 use crate::theme::Theme;
 
 /// Render a centered confirmation dialog for destructive actions.
+/// Keyboard hints are shown in the footer.
 pub fn render_confirm_dialog(
     frame: &mut Frame,
     area: Rect,
@@ -18,7 +19,7 @@ pub fn render_confirm_dialog(
     theme: &Theme,
 ) {
     let popup_width = 52.min(area.width);
-    let popup_height = 5.min(area.height);
+    let popup_height = 4.min(area.height); // Reduced since no hint area
     let popup_x = area.width.saturating_sub(popup_width) / 2;
     let popup_y = area.height.saturating_sub(popup_height) / 2;
 
@@ -40,9 +41,6 @@ pub fn render_confirm_dialog(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let [msg_area, hint_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-
     let warning_style = theme.status_warning().add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(
@@ -52,18 +50,13 @@ pub fn render_confirm_dialog(
         Line::from(""),
     ];
     let msg_para = Paragraph::new(lines).style(theme.bg_overlay());
-    frame.render_widget(msg_para, msg_area);
-
-    let hint = " [y] confirm  [Esc] cancel";
-    let hint_para =
-        Paragraph::new(Line::from(Span::styled(hint, theme.fg_muted()))).style(theme.bg_overlay());
-    frame.render_widget(hint_para, hint_area);
+    frame.render_widget(msg_para, inner);
 }
 
 /// Render a centered input dialog for text input (e.g. set image, port forward).
 /// Uses a multi-line layout: label line(s) on top, input field on its own line,
 /// so long resource names don't push the cursor off screen.
-#[allow(clippy::too_many_arguments)]
+/// Keyboard hints are shown in the footer, not in the dialog.
 pub fn render_input_dialog(
     frame: &mut Frame,
     area: Rect,
@@ -71,8 +64,8 @@ pub fn render_input_dialog(
     label: &str,
     input: &str,
     placeholder: &str,
-    hint: &str,
     theme: &Theme,
+    blink_cursor: bool,
 ) {
     // Calculate width: ensure the input line fits label prefix + input with room to spare
     // Use at least 50 chars, or wider if the content needs it
@@ -80,7 +73,7 @@ pub fn render_input_dialog(
     let input_line_width = label.len().max(placeholder.len()) + 4;
     let content_width = min_content_width.max(input_line_width);
     let popup_width = (content_width as u16 + 2).min(area.width); // +2 for borders
-    let popup_height = 7.min(area.height);
+    let popup_height = 6.min(area.height); // Reduced since no hint area
     let popup_x = area.width.saturating_sub(popup_width) / 2;
     let popup_y = area.height.saturating_sub(popup_height) / 2;
 
@@ -102,12 +95,11 @@ pub fn render_input_dialog(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // Layout: label, blank, input, hint
-    let [label_area, _, input_area, hint_area] = Layout::vertical([
+    // Layout: label, blank, input (no hint - it's shown in the footer)
+    let [label_area, _, input_area] = Layout::vertical([
         Constraint::Length(1), // label
         Constraint::Length(1), // blank line
-        Constraint::Length(1), // input with cursor
-        Constraint::Min(0),    // hint at bottom
+        Constraint::Min(0),    // input with cursor
     ])
     .areas(inner);
 
@@ -125,17 +117,14 @@ pub fn render_input_dialog(
         input
     };
 
+    let cursor = if blink_cursor { "█" } else { " " };
     let mut spans = vec![
         Span::styled(visible_input.to_string(), theme.fg_default()),
-        Span::styled("█", theme.accent_primary()),
+        Span::styled(cursor, theme.accent_primary()),
     ];
     if input.is_empty() {
         spans.push(Span::styled(placeholder.to_string(), theme.fg_muted()));
     }
     let input_para = Paragraph::new(Line::from(spans)).style(theme.bg_overlay());
     frame.render_widget(input_para, input_area);
-
-    let hint_para =
-        Paragraph::new(Line::from(Span::styled(hint, theme.fg_muted()))).style(theme.bg_overlay());
-    frame.render_widget(hint_para, hint_area);
 }

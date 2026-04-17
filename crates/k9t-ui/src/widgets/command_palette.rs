@@ -31,13 +31,16 @@ pub fn render_command_palette(
     filtered: &[CommandItem],
     highlight_index: usize,
     theme: &Theme,
+    blink_cursor: bool,
 ) {
+    let cursor = if blink_cursor { "█" } else { " " };
+
     if area.height < 2 || filtered.is_empty() {
         // Not enough space or no results — just show the prompt line
         let prompt = Line::from(vec![
             Span::styled(":", theme.accent_primary().add_modifier(Modifier::BOLD)),
             Span::styled(query.to_string(), theme.fg_default()),
-            Span::styled("█", theme.accent_primary()),
+            Span::styled(cursor, theme.accent_primary()),
         ]);
         frame.render_widget(Paragraph::new(prompt).style(theme.bg_surface()), area);
         return;
@@ -108,7 +111,7 @@ pub fn render_command_palette(
     let prompt = Line::from(vec![
         Span::styled(":", theme.accent_primary().add_modifier(Modifier::BOLD)),
         Span::styled(query.to_string(), theme.fg_default()),
-        Span::styled("█", theme.accent_primary()),
+        Span::styled(cursor, theme.accent_primary()),
     ]);
     frame.render_widget(
         Paragraph::new(prompt).style(theme.bg_surface()),

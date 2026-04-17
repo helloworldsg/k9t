@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Rect},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
@@ -32,16 +32,14 @@ pub fn render_container_picker(
 
     frame.render_widget(Clear, popup_area);
 
-    let [content_area, hint_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(popup_area);
-
     let block = Block::bordered()
         .title(format!(" {intent}: {pod_name} "))
         .title_alignment(Alignment::Center)
         .style(theme.bg_overlay());
 
-    let inner = block.inner(content_area);
-    frame.render_widget(block, content_area);
+    frame.render_widget(&block, popup_area);
+
+    let inner = block.inner(popup_area);
 
     let visible_height = inner.height as usize;
     let scroll_offset = if picker_index >= visible_height {
@@ -70,9 +68,4 @@ pub fn render_container_picker(
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
-
-    let hint = " [Enter]select  [j/k]nav  [Esc]cancel";
-    let hint_line = Line::from(Span::styled(hint, theme.fg_muted()));
-    let hint_paragraph = Paragraph::new(hint_line).style(theme.bg_overlay());
-    frame.render_widget(hint_paragraph, hint_area);
 }

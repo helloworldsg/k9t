@@ -9,15 +9,13 @@ pub fn is_terminal_too_small(area: Rect) -> bool {
 
 pub struct AppLayout {
     pub header: Rect,
-    pub namespace_bar: Rect,
     pub table: Rect,
     pub footer: Rect,
 }
 
 impl AppLayout {
     pub fn new(area: Rect) -> Self {
-        let [header, namespace_bar, table, footer] = Layout::vertical([
-            Constraint::Length(1),
+        let [header, table, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
@@ -25,7 +23,6 @@ impl AppLayout {
         .areas(area);
         Self {
             header,
-            namespace_bar,
             table,
             footer,
         }

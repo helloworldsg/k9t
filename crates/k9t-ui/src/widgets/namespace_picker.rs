@@ -17,6 +17,7 @@ pub fn render_namespace_picker(
     picker_index: usize,
     search: &str,
     theme: &Theme,
+    blink_cursor: bool,
 ) {
     let all_selected = selected.is_empty();
 
@@ -43,10 +44,9 @@ pub fn render_namespace_picker(
 
     frame.render_widget(Clear, popup_area);
 
-    let [search_area, content_area, hint_area] = Layout::vertical([
+    let [search_area, content_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
-        Constraint::Length(1),
     ])
     .areas(popup_area);
 
@@ -58,17 +58,18 @@ pub fn render_namespace_picker(
     let inner = block.inner(content_area);
     frame.render_widget(block, content_area);
 
-    // Search bar
+    // Search bar with blinking cursor
+    let cursor = if blink_cursor { "█" } else { " " };
     let search_prompt = if search.is_empty() {
         Line::from(vec![
-            Span::styled(" Filter: ", theme.fg_muted()),
-            Span::styled("type to search…", theme.fg_muted()),
+            Span::styled("\u{1f50d} ", theme.fg_muted()),
+            Span::styled("type to filter...", theme.fg_muted()),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" Filter: ", theme.fg_muted()),
+            Span::styled("\u{1f50d} ", theme.fg_muted()),
             Span::styled(search.to_string(), theme.fg_default()),
-            Span::styled("█", theme.accent_primary()),
+            Span::styled(cursor, theme.accent_primary()),
         ])
     };
     frame.render_widget(
@@ -111,9 +112,4 @@ pub fn render_namespace_picker(
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
-
-    let hint = " [Space]toggle  [a]ll  [Enter]apply  [Esc]cancel  type to filter";
-    let hint_line = Line::from(Span::styled(hint, theme.fg_muted()));
-    let hint_paragraph = Paragraph::new(hint_line).style(theme.bg_overlay());
-    frame.render_widget(hint_paragraph, hint_area);
 }

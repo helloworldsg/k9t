@@ -3,12 +3,14 @@ use ratatui::{
     layout::Constraint,
     style::Style,
     text::Span,
-    widgets::{Block, Cell, Row, Table, TableState},
+    widgets::{Cell, Row, Table, TableState},
 };
 
-use k9t_app::TableRow;
+use k9t_app::{PodTableMode, TableRow};
 
 use crate::theme::Theme;
+
+const MIN_WIDE_TABLE_WIDTH: u16 = 100;
 
 fn status_style(theme: &Theme, status: &str) -> Style {
     match status {
@@ -40,7 +42,7 @@ fn container_status_style(theme: &Theme, status: &str, is_init: bool) -> Style {
 /// Compute column widths that auto-resize to fit content and terminal width.
 /// Columns: NAMESPACE, NAME, READY, STATUS, RESTARTS, AGE (for pods)
 /// Container rows show: (empty), NAME(indented), READY(✓/✗), STATUS, RESTARTS, AGE(inherited)
-fn compute_column_widths(rows: &[TableRow]) -> [Constraint; 6] {
+fn compute_compact_column_widths(rows: &[TableRow]) -> [Constraint; 6] {
     let header_lens: [u16; 6] = [9, 4, 5, 6, 8, 3]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, AGE
 
     let data_max = if rows.is_empty() {
@@ -88,19 +90,92 @@ fn compute_column_widths(rows: &[TableRow]) -> [Constraint; 6] {
     ]
 }
 
+fn compute_wide_column_widths(rows: &[TableRow]) -> [Constraint; 8] {
+    let header_lens: [u16; 8] = [9, 4, 5, 6, 8, 2, 4, 3]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, IP, NODE, AGE
+
+    let data_max = if rows.is_empty() {
+        header_lens
+    } else {
+        let mut maxes = header_lens;
+        for row in rows {
+            match row {
+                TableRow::Pod { pod, .. } => {
+                    maxes[0] = maxes[0].max(pod.namespace.len() as u16);
+                    maxes[1] = maxes[1].max(pod.name.len() as u16 + 2);
+                    maxes[2] = maxes[2].max(pod.ready.len() as u16);
+                    maxes[3] = maxes[3].max(pod.status.len() as u16);
+                    maxes[4] = maxes[4].max(pod.restarts.to_string().len() as u16);
+                    maxes[5] = maxes[5].max(pod.pod_ip.len() as u16);
+                    maxes[6] = maxes[6].max(pod.node_name.len() as u16);
+                    maxes[7] = maxes[7].max(pod.age.len() as u16);
+                }
+                TableRow::Container { container, .. } => {
+                    let indented_len = container.name.len() as u16 + 6;
+                    maxes[1] = maxes[1].max(indented_len);
+                    maxes[2] = maxes[2].max(1);
+                    maxes[3] = maxes[3].max(container.status.len() as u16);
+                    maxes[4] = maxes[4].max(container.restart_count.to_string().len() as u16);
+                }
+            }
+        }
+        maxes
+    };
+
+    let padded: [u16; 8] = data_max.map(|w| w.saturating_add(2));
+
+    [
+        Constraint::Length(padded[0].min(20)),
+        Constraint::Min(padded[1]),
+        Constraint::Length(padded[2]),
+        Constraint::Length(padded[3].min(18)),
+        Constraint::Length(padded[4]),
+        Constraint::Length(padded[5].min(18)),
+        Constraint::Length(padded[6].min(24)),
+        Constraint::Length(padded[7]),
+    ]
+}
+
+fn effective_table_mode(mode: PodTableMode, area_width: u16) -> PodTableMode {
+    match mode {
+        PodTableMode::Wide if area_width >= MIN_WIDE_TABLE_WIDTH => PodTableMode::Wide,
+        _ => PodTableMode::Compact,
+    }
+}
+
 pub fn render_pod_table(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     rows: &[TableRow],
     selected_index: usize,
-    title: &str,
+    _title: &str,
+    mode: PodTableMode,
     theme: &Theme,
 ) {
-    let header_cells = ["NAMESPACE", "NAME", "READY", "STATUS", "RESTARTS", "AGE"]
-        .into_iter()
-        .map(|h| Cell::from(h).style(theme.title_style()));
+    let mode = effective_table_mode(mode, area.width);
 
-    let header = Row::new(header_cells).style(theme.title_style());
+    let header = match mode {
+        PodTableMode::Compact => {
+            let header_cells = ["NAMESPACE", "NAME", "READY", "STATUS", "RESTARTS", "AGE"]
+                .into_iter()
+                .map(|h| Cell::from(h).style(theme.title_style()));
+            Row::new(header_cells).style(theme.title_style())
+        }
+        PodTableMode::Wide => {
+            let header_cells = [
+                "NAMESPACE",
+                "NAME",
+                "READY",
+                "STATUS",
+                "RESTARTS",
+                "IP",
+                "NODE",
+                "AGE",
+            ]
+            .into_iter()
+            .map(|h| Cell::from(h).style(theme.title_style()));
+            Row::new(header_cells).style(theme.title_style())
+        }
+    };
 
     let table_rows: Vec<Row> = rows
         .iter()
@@ -115,15 +190,28 @@ pub fn render_pod_table(
                     let status_cell =
                         Cell::from(Span::styled(&pod.status, status_style(theme, &pod.status)));
 
-                    Row::new(vec![
-                        Cell::from(pod.namespace.as_str()),
-                        Cell::from(name_with_indicator),
-                        Cell::from(pod.ready.as_str()),
-                        status_cell,
-                        Cell::from(pod.restarts.to_string()),
-                        Cell::from(pod.age.as_str()),
-                    ])
-                    .style(if is_selected {
+                    let cells = match mode {
+                        PodTableMode::Compact => vec![
+                            Cell::from(pod.namespace.as_str()),
+                            Cell::from(name_with_indicator),
+                            Cell::from(pod.ready.as_str()),
+                            status_cell,
+                            Cell::from(pod.restarts.to_string()),
+                            Cell::from(pod.age.as_str()),
+                        ],
+                        PodTableMode::Wide => vec![
+                            Cell::from(pod.namespace.as_str()),
+                            Cell::from(name_with_indicator),
+                            Cell::from(pod.ready.as_str()),
+                            status_cell,
+                            Cell::from(pod.restarts.to_string()),
+                            Cell::from(pod.pod_ip.as_str()),
+                            Cell::from(pod.node_name.as_str()),
+                            Cell::from(pod.age.as_str()),
+                        ],
+                    };
+
+                    Row::new(cells).style(if is_selected {
                         theme.selected_style()
                     } else {
                         theme.fg_default()
@@ -149,29 +237,31 @@ pub fn render_pod_table(
                         container_status_style(theme, &container.status, container.is_init),
                     ));
 
-                    // Show port info if available
-                    let port_str = if container.ports.is_empty() {
-                        String::new()
-                    } else if container.ports.len() == 1 {
-                        format!("{}", container.ports[0].port)
-                    } else {
-                        container
-                            .ports
-                            .iter()
-                            .map(|p| format!("{}", p.port))
-                            .collect::<Vec<_>>()
-                            .join(",")
+                    let cells = match mode {
+                        PodTableMode::Compact => {
+                            // Container rows show: (empty), NAME(indented), READY(✓/✗), STATUS, RESTARTS, (empty for AGE)
+                            vec![
+                                Cell::from(""),
+                                Cell::from(name_cell),
+                                Cell::from(Span::styled(ready_str, ready_style)),
+                                status_cell,
+                                Cell::from(container.restart_count.to_string()),
+                                Cell::from(""),
+                            ]
+                        }
+                        PodTableMode::Wide => vec![
+                            Cell::from(""),
+                            Cell::from(name_cell),
+                            Cell::from(Span::styled(ready_str, ready_style)),
+                            status_cell,
+                            Cell::from(container.restart_count.to_string()),
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(""),
+                        ],
                     };
 
-                    Row::new(vec![
-                        Cell::from(""), // NAMESPACE — empty for containers
-                        Cell::from(name_cell),
-                        Cell::from(Span::styled(ready_str, ready_style)),
-                        status_cell,
-                        Cell::from(container.restart_count.to_string()),
-                        Cell::from(port_str), // PORT — show container ports
-                    ])
-                    .style(if is_selected {
+                    Row::new(cells).style(if is_selected {
                         theme.selected_style()
                     } else {
                         theme.fg_muted()
@@ -181,21 +271,18 @@ pub fn render_pod_table(
         })
         .collect();
 
-    let widths = compute_column_widths(rows);
-
-    let block = Block::new()
-        .style(theme.bg_surface())
-        .title(title.to_string());
-
-    let table = Table::new(table_rows, widths)
-        .header(header)
-        .row_highlight_style(theme.selected_style())
-        .block(block);
+    let table = match mode {
+        PodTableMode::Compact => Table::new(table_rows, compute_compact_column_widths(rows)),
+        PodTableMode::Wide => Table::new(table_rows, compute_wide_column_widths(rows)),
+    }
+    .header(header)
+    .row_highlight_style(theme.selected_style());
 
     // Use TableState for proper scrolling — ratatui automatically scrolls
     // the viewport to keep the selected row visible.
     let mut state = TableState::default();
     state.select(Some(selected_index));
 
-    frame.render_stateful_widget(table, area, &mut state);
+    let padded_table = table.style(theme.bg_surface());
+    frame.render_stateful_widget(padded_table, area, &mut state);
 }

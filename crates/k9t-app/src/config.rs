@@ -186,10 +186,10 @@ impl Default for Commands {
 pub struct Config {
     #[serde(default = "default_theme")]
     pub theme: String,
-    #[serde(default = "default_refresh_rate_ms")]
-    pub refresh_rate_ms: u64,
     #[serde(default)]
     pub namespace: Option<String>,
+    #[serde(default)]
+    pub wide_pod_columns: bool,
     #[serde(default = "default_borderless")]
     pub borderless: bool,
     #[serde(default)]
@@ -209,8 +209,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: default_theme(),
-            refresh_rate_ms: default_refresh_rate_ms(),
             namespace: None,
+            wide_pod_columns: false,
             borderless: default_borderless(),
             layout: LayoutPreset::default(),
             filters: Vec::new(),
@@ -302,10 +302,6 @@ fn default_theme() -> String {
     "tokyo_night".to_string()
 }
 
-fn default_refresh_rate_ms() -> u64 {
-    1000
-}
-
 fn default_borderless() -> bool {
     true
 }
@@ -343,8 +339,8 @@ mod tests {
     fn config_default_values() {
         let config = Config::default();
         assert_eq!(config.theme, "tokyo_night");
-        assert_eq!(config.refresh_rate_ms, 1000);
         assert!(config.namespace.is_none());
+        assert!(!config.wide_pod_columns);
         assert!(config.borderless);
         assert!(config.filters.is_empty());
         assert!(config.commands.is_empty());
@@ -356,7 +352,6 @@ mod tests {
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: Config = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.theme, config.theme);
-        assert_eq!(parsed.refresh_rate_ms, config.refresh_rate_ms);
     }
 
     #[test]
@@ -430,7 +425,7 @@ mod tests {
     fn config_yaml_with_filters_and_commands() {
         let yaml = r#"
 theme: nord
-refresh_rate_ms: 500
+wide_pod_columns: true
 borderless: false
 filters:
   - "plt/kong.*"
@@ -443,7 +438,7 @@ commands:
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.theme, "nord");
-        assert_eq!(config.refresh_rate_ms, 500);
+        assert!(config.wide_pod_columns);
         assert!(!config.borderless);
         assert_eq!(config.filters.len(), 2);
         assert_eq!(config.commands.len(), 1);
@@ -458,7 +453,6 @@ commands:
     fn user_config_pf_command() {
         let yaml = r#"
 theme: tokyo_night
-refresh_rate_ms: 1000
 borderless: true
 filters:
   - ".*/.*"
