@@ -127,7 +127,12 @@ fn compute_wide_column_widths(rows: &[TableRow]) -> [Constraint; 9] {
                     maxes[4] = maxes[4].max(pod.restarts.to_string().len() as u16);
                     maxes[5] = maxes[5].max(pod.pod_ip.len() as u16);
                     maxes[6] = maxes[6].max(pod.node_name.len() as u16);
-                    maxes[7] = maxes[7].max(pod.container_details.first().map(|c| shorten_image(&c.image).len()).unwrap_or(0) as u16);
+                    maxes[7] = maxes[7].max(
+                        pod.container_details
+                            .first()
+                            .map(|c| shorten_image(&c.image).len())
+                            .unwrap_or(0) as u16,
+                    );
                     maxes[8] = maxes[8].max(pod.age.len() as u16);
                 }
                 TableRow::Container { container, .. } => {
@@ -214,7 +219,11 @@ pub fn render_pod_table(
                     let status_cell =
                         Cell::from(Span::styled(&pod.status, status_style(theme, &pod.status)));
 
-                    let pod_image = pod.container_details.first().map(|c| shorten_image(&c.image)).unwrap_or_else(|| "-".to_string());
+                    let pod_image = pod
+                        .container_details
+                        .first()
+                        .map(|c| shorten_image(&c.image))
+                        .unwrap_or_else(|| "-".to_string());
 
                     let cells = match mode {
                         PodTableMode::Compact => vec![
