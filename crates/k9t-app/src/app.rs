@@ -394,6 +394,36 @@ impl App {
         )
     }
 
+    pub fn build_list_configmaps_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.list_configmaps,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
+    }
+
+    pub fn build_list_secrets_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.list_secrets,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
+    }
+
     /// Build the flattened table rows (pods + expanded containers) from the current pod list.
     /// This is the view the table widget renders and the selection index navigates.
     /// When a search filter is active, only matching pods (and their containers) are shown.
@@ -956,6 +986,8 @@ impl App {
                     ContainerAction::PortForward,
                     ContainerAction::Debug,
                     ContainerAction::ListVolumes,
+                    ContainerAction::ListConfigmaps,
+                    ContainerAction::ListSecrets,
                 ];
                 for cmd in &self.custom_commands {
                     if cmd.matches(&pod.namespace, &pod.name, None) {
@@ -1149,6 +1181,20 @@ impl App {
                             &pod.name,
                             Some(&container.name),
                             &volumes,
+                        ));
+                    }
+                    ContainerAction::ListConfigmaps => {
+                        self.pending_shell = Some(self.build_list_configmaps_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                        ));
+                    }
+                    ContainerAction::ListSecrets => {
+                        self.pending_shell = Some(self.build_list_secrets_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
                         ));
                     }
                     ContainerAction::Custom(cmd) => {

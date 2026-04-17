@@ -102,7 +102,10 @@ commands_builtin:
   set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}"
   port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}"
   debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}"
-  list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \\; 2>/dev/null | head -100; done' | less"
+  list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \; 2>/dev/null | head -100; done' | less"
+  list_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -o yaml -n {{NAMESPACE}} --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml"
+  list_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"=== \\$s ===\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | hl"
+
 
 # Custom commands — appear in the action dialog and command palette
 commands:

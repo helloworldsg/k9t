@@ -101,6 +101,9 @@ fn run_subcommand(
     // Restore terminal to normal mode so the subprocess can use it
     ratatui::restore();
 
+    // Disable mouse events for the subprocess so copy/paste works
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+
     // Ignore SIGINT in k9t so Ctrl-C only kills the child process.
     // The child restores SIG_DFL via pre_exec so it still responds to Ctrl-C.
     ignore_sigint();

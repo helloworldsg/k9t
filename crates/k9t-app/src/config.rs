@@ -169,6 +169,10 @@ pub struct Commands {
     pub debug: String,
     /// List volumes. Default: lists files in all mounted volumes using `{{VOLUMES}}`
     pub list_volumes: String,
+    /// List configmaps. Default: fetches and displays all ConfigMaps in namespace
+    pub list_configmaps: String,
+    /// List secrets. Default: fetches and displays all Secrets in namespace
+    pub list_secrets: String,
 }
 
 impl Default for Commands {
@@ -183,6 +187,8 @@ impl Default for Commands {
             port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}".to_string(),
             debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}".to_string(),
             list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \\; 2>/dev/null | head -100; done' | less".to_string(),
+            list_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -n {{NAMESPACE}} -o yaml --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml --style=changes".to_string(),
+            list_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"=== \\$s ===\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | hl".to_string(),
         }
     }
 }

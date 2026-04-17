@@ -35,6 +35,8 @@ pub enum ContainerAction {
     PortForward,
     Debug,
     ListVolumes,
+    ListConfigmaps,
+    ListSecrets,
     Custom(CustomCommand),
 }
 
@@ -51,6 +53,8 @@ impl ContainerAction {
             ContainerAction::PortForward => "Port forward".to_string(),
             ContainerAction::Debug => "Debug".to_string(),
             ContainerAction::ListVolumes => "List volumes".to_string(),
+            ContainerAction::ListConfigmaps => "List configmaps".to_string(),
+            ContainerAction::ListSecrets => "List secrets".to_string(),
             ContainerAction::Custom(cmd) => format!(
                 ":{} {}",
                 cmd.name,
