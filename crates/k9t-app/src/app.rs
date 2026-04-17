@@ -506,38 +506,26 @@ impl App {
                 let total = self.table_rows().len();
                 self.selected_index = (self.selected_index + 1).min(total.saturating_sub(1));
             }
-            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                // Click in the table area — select the row and potentially activate it
-                // The table starts after the header (2 rows) + namespace bar (1 row).
-                // We approximate: row 0 is header, row 1 is namespace bar,
-                // rows 2.. are the table content.
-                // The clicked row_index in the table is: (mouse.row - 2)
-                // We need to account for scroll offset.
-                // For simplicity, we map the click position to a table row.
-                // Header area = row 0, namespace bar = row 1, table starts at row 2.
-
-                // Check if click is in the table area (below header + namespace bar)
-                if mouse.row >= 2 {
-                    let clicked_row = (mouse.row - 2) as usize;
-                    let total_rows = self.table_rows().len();
-                    if clicked_row < total_rows {
-                        // If clicking the same row that's already selected, activate it
-                        if clicked_row == self.selected_index {
-                            let rows = self.table_rows();
-                            if let Some(row) = rows.get(clicked_row) {
-                                match row {
-                                    TableRow::Pod { .. } => {
-                                        self.toggle_expand_selected();
-                                    }
-                                    TableRow::Container { .. } => {
-                                        self.open_container_actions();
-                                    }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                if mouse.row >= 2 =>
+            {
+                let clicked_row = (mouse.row - 2) as usize;
+                let total_rows = self.table_rows().len();
+                if clicked_row < total_rows {
+                    if clicked_row == self.selected_index {
+                        let rows = self.table_rows();
+                        if let Some(row) = rows.get(clicked_row) {
+                            match row {
+                                TableRow::Pod { .. } => {
+                                    self.toggle_expand_selected();
+                                }
+                                TableRow::Container { .. } => {
+                                    self.open_container_actions();
                                 }
                             }
-                        } else {
-                            // Just select the row
-                            self.selected_index = clicked_row;
                         }
+                    } else {
+                        self.selected_index = clicked_row;
                     }
                 }
             }
@@ -604,12 +592,10 @@ impl App {
                 }
             }
             // ── Quit ──
-            (KeyModifiers::NONE, KeyCode::Esc) => {
-                if self.search_query.is_some() {
-                    // Clear committed search filter
-                    self.search_query = None;
-                }
+            (KeyModifiers::NONE, KeyCode::Esc) if self.search_query.is_some() => {
+                self.search_query = None;
             }
+            (KeyModifiers::NONE, KeyCode::Esc) => {}
             // ── Help (k9s: ?) ──
             (KeyModifiers::NONE, KeyCode::Char('?')) => {
                 self.mode = Mode::Help;
