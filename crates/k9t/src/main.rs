@@ -400,8 +400,7 @@ impl Drop for TerminalGuard {
         // Disable mouse capture before restoring the terminal.
         // ratatui::restore() handles raw mode and alternate screen, but
         // mouse capture was enabled separately and must be disabled separately.
-        crossterm::execute!(std::io::stderr(), crossterm::event::DisableMouseCapture)
-            .unwrap_or(());
+        crossterm::execute!(std::io::stderr(), crossterm::event::DisableMouseCapture).unwrap_or(());
         ratatui::restore();
     }
 }
@@ -413,8 +412,7 @@ async fn main() -> Result<()> {
     // terminal in raw mode with mouse capture still active.
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        crossterm::execute!(std::io::stderr(), crossterm::event::DisableMouseCapture)
-            .unwrap_or(());
+        crossterm::execute!(std::io::stderr(), crossterm::event::DisableMouseCapture).unwrap_or(());
         ratatui::restore();
         default_panic(info);
     }));
