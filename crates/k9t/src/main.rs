@@ -512,6 +512,7 @@ async fn main() -> Result<()> {
                             ("l", "logs"),
                             ("s", "shell"),
                             ("f", "port-forward"),
+                            ("D", "debug"),
                             ("i", "image"),
                             (",", "sort"),
                             ("K", "kill"),
@@ -580,6 +581,7 @@ async fn main() -> Result<()> {
                         k9t_app::ContainerPickerIntent::Logs(_) => "Logs",
                         k9t_app::ContainerPickerIntent::SetImage => "Set Image",
                         k9t_app::ContainerPickerIntent::PortForward => "Port Forward",
+                        k9t_app::ContainerPickerIntent::Debug => "Debug",
                     };
                     container_picker::render_container_picker(
                         frame,
@@ -748,6 +750,10 @@ async fn main() -> Result<()> {
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   f             ", emphasis),
                             ratatui::text::Span::styled("Port forward", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   D             ", emphasis),
+                            ratatui::text::Span::styled("Debug pod (kubectl debug)", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled(

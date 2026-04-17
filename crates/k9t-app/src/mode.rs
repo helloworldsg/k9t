@@ -17,9 +17,10 @@ pub enum Mode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContainerPickerIntent {
     Shell,
-    Logs(bool), // true = previous logs
+    Logs(bool),
     SetImage,
     PortForward,
+    Debug,
 }
 
 /// An action available in the container actions dialog.
@@ -32,6 +33,7 @@ pub enum ContainerAction {
     Yaml,
     SetImage,
     PortForward,
+    Debug,
     Custom(CustomCommand),
 }
 
@@ -46,6 +48,7 @@ impl ContainerAction {
             ContainerAction::Yaml => "YAML".to_string(),
             ContainerAction::SetImage => "Set image".to_string(),
             ContainerAction::PortForward => "Port forward".to_string(),
+            ContainerAction::Debug => "Debug".to_string(),
             ContainerAction::Custom(cmd) => format!(
                 ":{} {}",
                 cmd.name,

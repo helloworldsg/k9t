@@ -114,6 +114,10 @@ jobs:
             version "K9T_VERSION"
             license "MIT"
 
+            depends_on "jq"
+            depends_on "bat"
+            depends_on "hl"
+
             on_macos do
               if Hardware::CPU.intel?
                 url "https://github.com/helloworldsg/k9t/releases/download/vK9T_VERSION/k9t-macos-amd64.tar.gz"

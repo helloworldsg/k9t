@@ -107,11 +107,29 @@ impl CommandTemplate {
         container: Option<&str>,
         context: Option<&str>,
     ) -> String {
+        self.render_with(namespace, pod_name, container, context, &[])
+    }
+
+    /// Render the command template with additional variable substitutions.
+    ///
+    /// `extra` is a list of `(placeholder, value)` pairs, e.g.
+    /// `[("IMAGE", "nginx:latest"), ("PORTS", "8080:80")]`.
+    pub fn render_with(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+        context: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> String {
         let mut cmd = self.command.clone();
         cmd = cmd.replace("{{NAMESPACE}}", namespace);
         cmd = cmd.replace("{{POD}}", pod_name);
         cmd = cmd.replace("{{CONTAINER}}", container.unwrap_or(""));
         cmd = cmd.replace("{{CONTEXT}}", context.unwrap_or(""));
+        for (key, value) in extra {
+            cmd = cmd.replace(&format!("{{{{{}}}}}", key), value);
+        }
         cmd
     }
 }
@@ -125,7 +143,7 @@ impl CommandTemplate {
 /// ```yaml
 /// commands:
 ///   logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl"
-///   yaml: "kubectl get -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes"
+///   yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes"
 /// ```
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
@@ -137,14 +155,16 @@ pub struct Commands {
     /// Shell into pod. Default: `kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh`
     /// Fallback shells (/bin/sh, /bin/bash) are tried automatically.
     pub shell: String,
-    /// Describe resource. Default: `kubectl describe -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes`
+    /// Describe resource. Default: `kubectl describe pod -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes`
     pub describe: String,
-    /// View YAML. Default: `kubectl get -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes`
+    /// View YAML. Default: `kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes`
     pub yaml: String,
     /// Set container image. Default: `kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}`
     pub set_image: String,
     /// Port forward. Default: `kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}`
     pub port_forward: String,
+    /// Debug pod. Default: `kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}`
+    pub debug: String,
 }
 
 impl Default for Commands {
@@ -153,10 +173,11 @@ impl Default for Commands {
             logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl".to_string(),
             previous_logs: "kubectl logs --previous -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | hl".to_string(),
             shell: "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh".to_string(),
-            describe: "kubectl describe -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
-            yaml: "kubectl get -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
+            describe: "kubectl describe pod -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
+            yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
             set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}".to_string(),
             port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}".to_string(),
+            debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}".to_string(),
         }
     }
 }

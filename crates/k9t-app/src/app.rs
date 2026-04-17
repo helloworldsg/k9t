@@ -256,6 +256,27 @@ impl App {
     // Each method renders the built-in template from config.
 
     /// Build a logs command from the built-in template.
+    fn render_builtin(
+        &self,
+        template: &str,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> ShellCommand {
+        let rendered = CommandTemplate {
+            command: template.to_string(),
+        }
+        .render_with(
+            namespace,
+            pod_name,
+            container,
+            self.context_name.as_deref(),
+            extra,
+        );
+        ShellCommand::bash(&rendered)
+    }
+
     pub fn build_logs_cmd(
         &self,
         namespace: &str,
@@ -268,66 +289,38 @@ impl App {
         } else {
             &self.commands_builtin.logs
         };
-        let rendered = CommandTemplate {
-            command: template.clone(),
-        }
-        .render(namespace, pod_name, container, self.context_name.as_deref());
-        ShellCommand::bash(&rendered)
+        self.render_builtin(template, namespace, pod_name, container, &[])
     }
 
-    /// Build a shell (exec) command.
-    /// Uses the built-in template for the primary command, then builds fallback shells.
     pub fn build_shell_cmd(
         &self,
         namespace: &str,
         pod_name: &str,
         container: Option<&str>,
     ) -> ShellCommand {
-        let primary_rendered = CommandTemplate {
-            command: self.commands_builtin.shell.clone(),
-        }
-        .render(namespace, pod_name, container, self.context_name.as_deref());
-        // Extract the shell from the template (after "-- ") for fallback construction
-        // But the template already uses `bash -c`, so we just return it directly.
-        // Fallback shells are handled by `kubectl_exec` as a special case.
-        // For now, the template approach means the user controls the shell.
-        ShellCommand::bash(&primary_rendered)
+        self.render_builtin(
+            &self.commands_builtin.shell,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
     }
 
-    /// Build a describe command from the built-in template.
-    pub fn build_describe_cmd(
-        &self,
-        _resource_type: &str,
-        namespace: &str,
-        name: &str,
-    ) -> ShellCommand {
-        // describe template uses {{POD}} for the resource name
-        let rendered = self
-            .commands_builtin
-            .describe
-            .replace("{{NAMESPACE}}", namespace)
-            .replace("{{POD}}", name)
-            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""));
-        ShellCommand::bash(&rendered)
+    pub fn build_describe_cmd(&self, namespace: &str, pod_name: &str) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.describe,
+            namespace,
+            pod_name,
+            None,
+            &[],
+        )
     }
 
-    /// Build a yaml command from the built-in template.
-    pub fn build_yaml_cmd(
-        &self,
-        _resource_type: &str,
-        namespace: &str,
-        name: &str,
-    ) -> ShellCommand {
-        let rendered = self
-            .commands_builtin
-            .yaml
-            .replace("{{NAMESPACE}}", namespace)
-            .replace("{{POD}}", name)
-            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""));
-        ShellCommand::bash(&rendered)
+    pub fn build_yaml_cmd(&self, namespace: &str, pod_name: &str) -> ShellCommand {
+        self.render_builtin(&self.commands_builtin.yaml, namespace, pod_name, None, &[])
     }
 
-    /// Build a set-image command from the built-in template.
     pub fn build_set_image_cmd(
         &self,
         namespace: &str,
@@ -335,18 +328,15 @@ impl App {
         container: &str,
         image: &str,
     ) -> ShellCommand {
-        let rendered = self
-            .commands_builtin
-            .set_image
-            .replace("{{NAMESPACE}}", namespace)
-            .replace("{{POD}}", pod_name)
-            .replace("{{CONTAINER}}", container)
-            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""))
-            .replace("{{IMAGE}}", image);
-        ShellCommand::bash(&rendered)
+        self.render_builtin(
+            &self.commands_builtin.set_image,
+            namespace,
+            pod_name,
+            Some(container),
+            &[("IMAGE", image)],
+        )
     }
 
-    /// Build a port-forward command from the built-in template.
     pub fn build_port_forward_cmd(
         &self,
         namespace: &str,
@@ -354,15 +344,28 @@ impl App {
         container: Option<&str>,
         ports: &str,
     ) -> ShellCommand {
-        let rendered = self
-            .commands_builtin
-            .port_forward
-            .replace("{{NAMESPACE}}", namespace)
-            .replace("{{POD}}", pod_name)
-            .replace("{{CONTAINER}}", container.unwrap_or(""))
-            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""))
-            .replace("{{PORTS}}", ports);
-        ShellCommand::bash(&rendered)
+        self.render_builtin(
+            &self.commands_builtin.port_forward,
+            namespace,
+            pod_name,
+            container,
+            &[("PORTS", ports)],
+        )
+    }
+
+    pub fn build_debug_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.debug,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
     }
 
     /// Build the flattened table rows (pods + expanded containers) from the current pod list.
@@ -703,8 +706,41 @@ impl App {
             // Always describes the pod (even if container row selected)
             (KeyModifiers::NONE, KeyCode::Char('d')) => {
                 if let Some(pod) = self.selected_pod_cloned() {
-                    self.pending_shell =
-                        Some(self.build_describe_cmd("pod", &pod.namespace, &pod.name));
+                    self.pending_shell = Some(self.build_describe_cmd(&pod.namespace, &pod.name));
+                }
+            }
+            // ── Actions: Debug (D) → kubectl debug ──
+            (KeyModifiers::SHIFT, KeyCode::Char('D')) => {
+                if let Some(row) = self.selected_row() {
+                    match &row {
+                        TableRow::Container {
+                            pod_index,
+                            container,
+                            ..
+                        } => {
+                            if let Some(pod) = self.pods.get(*pod_index) {
+                                self.pending_shell = Some(self.build_debug_cmd(
+                                    &pod.namespace,
+                                    &pod.name,
+                                    Some(&container.name),
+                                ));
+                            }
+                        }
+                        TableRow::Pod { pod, .. } => {
+                            if pod.containers.len() > 1 {
+                                self.container_choices = pod.containers.clone();
+                                self.container_picker_index = 0;
+                                self.mode = Mode::ContainerPicker(ContainerPickerIntent::Debug);
+                            } else {
+                                let container = pod.containers.first().cloned();
+                                self.pending_shell = Some(self.build_debug_cmd(
+                                    &pod.namespace,
+                                    &pod.name,
+                                    container.as_deref(),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             // ── Actions: Shell (k9s: s) → kubectl exec ──
@@ -745,8 +781,7 @@ impl App {
             // Always shows YAML for the pod
             (KeyModifiers::NONE, KeyCode::Char('y')) => {
                 if let Some(pod) = self.selected_pod_cloned() {
-                    self.pending_shell =
-                        Some(self.build_yaml_cmd("pod", &pod.namespace, &pod.name));
+                    self.pending_shell = Some(self.build_yaml_cmd(&pod.namespace, &pod.name));
                 }
             }
             // ── Actions: Set image (i) → select container, then type new image ──
@@ -901,6 +936,7 @@ impl App {
                     ContainerAction::Yaml,
                     ContainerAction::SetImage,
                     ContainerAction::PortForward,
+                    ContainerAction::Debug,
                 ];
                 for cmd in &self.custom_commands {
                     if cmd.matches(&pod.namespace, &pod.name, None) {
@@ -1052,11 +1088,10 @@ impl App {
                     }
                     ContainerAction::Describe => {
                         self.pending_shell =
-                            Some(self.build_describe_cmd("pod", &pod.namespace, &pod.name));
+                            Some(self.build_describe_cmd(&pod.namespace, &pod.name));
                     }
                     ContainerAction::Yaml => {
-                        self.pending_shell =
-                            Some(self.build_yaml_cmd("pod", &pod.namespace, &pod.name));
+                        self.pending_shell = Some(self.build_yaml_cmd(&pod.namespace, &pod.name));
                     }
                     ContainerAction::SetImage => {
                         self.set_image_namespace = pod.namespace.clone();
@@ -1077,6 +1112,13 @@ impl App {
                             .map(|p| format!("{}:{}", p.port, p.port))
                             .unwrap_or_default();
                         self.mode = Mode::PortForwardInput;
+                    }
+                    ContainerAction::Debug => {
+                        self.pending_shell = Some(self.build_debug_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                        ));
                     }
                     ContainerAction::Custom(cmd) => {
                         let rendered = cmd.render(
@@ -1416,6 +1458,13 @@ impl App {
                                 .unwrap_or_default();
                             self.mode = Mode::PortForwardInput;
                             return;
+                        }
+                        ContainerPickerIntent::Debug => {
+                            self.pending_shell = Some(self.build_debug_cmd(
+                                &pod.namespace,
+                                &pod.name,
+                                Some(&container),
+                            ));
                         }
                     }
                 }
