@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent
 use k9t_core::{ContainerDetail, PodInfo};
 
 use crate::command::{Command, CommandItem};
-use crate::config::{Commands, CommandTemplate, CustomCommand};
+use crate::config::{CommandTemplate, Commands, CustomCommand};
 use crate::event::AppEvent;
 use crate::mode::{ConfirmContext, ContainerAction, ContainerPickerIntent, Mode};
 
@@ -268,8 +268,10 @@ impl App {
         } else {
             &self.commands_builtin.logs
         };
-        let rendered = CommandTemplate { command: template.clone() }
-            .render(namespace, pod_name, container, self.context_name.as_deref());
+        let rendered = CommandTemplate {
+            command: template.clone(),
+        }
+        .render(namespace, pod_name, container, self.context_name.as_deref());
         ShellCommand::bash(&rendered)
     }
 
@@ -281,8 +283,10 @@ impl App {
         pod_name: &str,
         container: Option<&str>,
     ) -> ShellCommand {
-        let primary_rendered = CommandTemplate { command: self.commands_builtin.shell.clone() }
-            .render(namespace, pod_name, container, self.context_name.as_deref());
+        let primary_rendered = CommandTemplate {
+            command: self.commands_builtin.shell.clone(),
+        }
+        .render(namespace, pod_name, container, self.context_name.as_deref());
         // Extract the shell from the template (after "-- ") for fallback construction
         // But the template already uses `bash -c`, so we just return it directly.
         // Fallback shells are handled by `kubectl_exec` as a special case.
@@ -298,7 +302,9 @@ impl App {
         name: &str,
     ) -> ShellCommand {
         // describe template uses {{POD}} for the resource name
-        let rendered = self.commands_builtin.describe
+        let rendered = self
+            .commands_builtin
+            .describe
             .replace("{{NAMESPACE}}", namespace)
             .replace("{{POD}}", name)
             .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""));
@@ -306,8 +312,15 @@ impl App {
     }
 
     /// Build a yaml command from the built-in template.
-    pub fn build_yaml_cmd(&self, _resource_type: &str, namespace: &str, name: &str) -> ShellCommand {
-        let rendered = self.commands_builtin.yaml
+    pub fn build_yaml_cmd(
+        &self,
+        _resource_type: &str,
+        namespace: &str,
+        name: &str,
+    ) -> ShellCommand {
+        let rendered = self
+            .commands_builtin
+            .yaml
             .replace("{{NAMESPACE}}", namespace)
             .replace("{{POD}}", name)
             .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""));
@@ -322,7 +335,9 @@ impl App {
         container: &str,
         image: &str,
     ) -> ShellCommand {
-        let rendered = self.commands_builtin.set_image
+        let rendered = self
+            .commands_builtin
+            .set_image
             .replace("{{NAMESPACE}}", namespace)
             .replace("{{POD}}", pod_name)
             .replace("{{CONTAINER}}", container)
@@ -339,7 +354,9 @@ impl App {
         container: Option<&str>,
         ports: &str,
     ) -> ShellCommand {
-        let rendered = self.commands_builtin.port_forward
+        let rendered = self
+            .commands_builtin
+            .port_forward
             .replace("{{NAMESPACE}}", namespace)
             .replace("{{POD}}", pod_name)
             .replace("{{CONTAINER}}", container.unwrap_or(""))
@@ -892,7 +909,10 @@ impl App {
                 }
                 self.container_actions = actions;
                 self.container_actions_index = 0;
-                self.mode = Mode::ContainerActions { query: String::new(), index: 0 };
+                self.mode = Mode::ContainerActions {
+                    query: String::new(),
+                    index: 0,
+                };
             }
         }
     }
@@ -913,7 +933,11 @@ impl App {
                 let filtered = self.filtered_container_actions(&query);
                 if let Some(action) = filtered.get(index).cloned() {
                     // Map filtered index back to the full actions list
-                    let full_index = self.container_actions.iter().position(|a| a == &action).unwrap_or(index);
+                    let full_index = self
+                        .container_actions
+                        .iter()
+                        .position(|a| a == &action)
+                        .unwrap_or(index);
                     self.container_actions_index = full_index;
                     self.execute_selected_container_action();
                 } else {
@@ -923,25 +947,40 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
                 let filtered = self.filtered_container_actions(&query);
                 let new_index = (index + 1).min(filtered.len().saturating_sub(1));
-                self.mode = Mode::ContainerActions { query, index: new_index };
+                self.mode = Mode::ContainerActions {
+                    query,
+                    index: new_index,
+                };
             }
             (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
                 let new_index = index.saturating_sub(1);
-                self.mode = Mode::ContainerActions { query, index: new_index };
+                self.mode = Mode::ContainerActions {
+                    query,
+                    index: new_index,
+                };
             }
             (KeyModifiers::NONE, KeyCode::Backspace) => {
                 let mut new_query = query;
                 new_query.pop();
-                self.mode = Mode::ContainerActions { query: new_query, index: 0 };
+                self.mode = Mode::ContainerActions {
+                    query: new_query,
+                    index: 0,
+                };
             }
             (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
                 // Clear query
-                self.mode = Mode::ContainerActions { query: String::new(), index: 0 };
+                self.mode = Mode::ContainerActions {
+                    query: String::new(),
+                    index: 0,
+                };
             }
             (KeyModifiers::NONE, KeyCode::Char(c)) => {
                 let mut new_query = query;
                 new_query.push(c);
-                self.mode = Mode::ContainerActions { query: new_query, index: 0 };
+                self.mode = Mode::ContainerActions {
+                    query: new_query,
+                    index: 0,
+                };
             }
             _ => {}
         }
@@ -1864,5 +1903,3 @@ impl App {
         self.selected_index = 0;
     }
 }
-
-
