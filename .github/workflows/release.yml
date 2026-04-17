@@ -79,3 +79,78 @@ jobs:
           files: |
             artifacts/*.tar.gz
             checksums.txt
+
+      - name: Set version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract SHA256 checksums
+        id: checksums
+        run: |
+          AMD64_SHA=$(awk '{print $1}' artifacts/k9t-macos-amd64.tar.gz.sha256)
+          ARM64_SHA=$(awk '{print $1}' artifacts/k9t-macos-arm64.tar.gz.sha256)
+          LINUX_AMD64_SHA=$(awk '{print $1}' artifacts/k9t-linux-amd64.tar.gz.sha256)
+          LINUX_ARM64_SHA=$(awk '{print $1}' artifacts/k9t-linux-arm64.tar.gz.sha256)
+          echo "macos-amd64=$AMD64_SHA" >> "$GITHUB_OUTPUT"
+          echo "macos-arm64=$ARM64_SHA" >> "$GITHUB_OUTPUT"
+          echo "linux-amd64=$LINUX_AMD64_SHA" >> "$GITHUB_OUTPUT"
+          echo "linux-arm64=$LINUX_ARM64_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          MACOS_AMD64_SHA: ${{ steps.checksums.outputs.macos-amd64 }}
+          MACOS_ARM64_SHA: ${{ steps.checksums.outputs.macos-arm64 }}
+          LINUX_AMD64_SHA: ${{ steps.checksums.outputs.linux-amd64 }}
+          LINUX_ARM64_SHA: ${{ steps.checksums.outputs.linux-arm64 }}
+          TAP_REPO: helloworldsg/homebrew-tap
+          HOMEBREW_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone https://x-access-token:${HOMEBREW_GITHUB_TOKEN}@github.com/${TAP_REPO}.git tap-repo
+          mkdir -p tap-repo/Formula
+          FORMULA_TEMPLATE='class K9t < Formula
+            desc "Terminal UI for Kubernetes"
+            homepage "https://github.com/helloworldsg/k9t"
+            version "K9T_VERSION"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/helloworldsg/k9t/releases/download/vK9T_VERSION/k9t-macos-amd64.tar.gz"
+                sha256 "MACOS_AMD64_SHA"
+              else
+                url "https://github.com/helloworldsg/k9t/releases/download/vK9T_VERSION/k9t-macos-arm64.tar.gz"
+                sha256 "MACOS_ARM64_SHA"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.intel?
+                url "https://github.com/helloworldsg/k9t/releases/download/vK9T_VERSION/k9t-linux-amd64.tar.gz"
+                sha256 "LINUX_AMD64_SHA"
+              else
+                url "https://github.com/helloworldsg/k9t/releases/download/vK9T_VERSION/k9t-linux-arm64.tar.gz"
+                sha256 "LINUX_ARM64_SHA"
+              end
+            end
+
+            def install
+              bin.install "k9t"
+            end
+
+            test do
+              system "#{bin}/k9t", "--version"
+            end
+          end'
+          echo "$FORMULA_TEMPLATE" \
+            | sed "s/K9T_VERSION/${VERSION}/g" \
+            | sed "s/MACOS_AMD64_SHA/${MACOS_AMD64_SHA}/g" \
+            | sed "s/MACOS_ARM64_SHA/${MACOS_ARM64_SHA}/g" \
+            | sed "s/LINUX_AMD64_SHA/${LINUX_AMD64_SHA}/g" \
+            | sed "s/LINUX_ARM64_SHA/${LINUX_ARM64_SHA}/g" \
+            > tap-repo/Formula/k9t.rb
+          git -C tap-repo config user.name "github-actions[bot]"
+          git -C tap-repo config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap-repo add Formula/k9t.rb
+          git -C tap-repo commit -m "k9t ${VERSION}" || true
+          git -C tap-repo push
