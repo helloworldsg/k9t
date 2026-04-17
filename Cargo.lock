@@ -1175,7 +1175,7 @@ dependencies = [
  "k9t-core",
  "regex",
  "serde",
- "serde_json",
+ "serde_yaml",
  "toml",
 ]
 

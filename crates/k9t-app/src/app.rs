@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent
 use k9t_core::{ContainerDetail, PodInfo};
 
 use crate::command::{Command, CommandItem};
-use crate::config::{CommandOverrides, CustomCommand};
+use crate::config::{Commands, CommandTemplate, CustomCommand};
 use crate::event::AppEvent;
 use crate::mode::{ConfirmContext, ContainerAction, ContainerPickerIntent, Mode};
 
@@ -164,215 +164,43 @@ pub struct App {
     pub container_actions: Vec<ContainerAction>,
     /// Selected index in the container actions dialog.
     pub container_actions_index: usize,
-    /// Command overrides from config (logs, shell, describe, etc.).
-    pub overrides: CommandOverrides,
+    /// Built-in command templates (logs, shell, describe, etc.) from config.
+    pub commands_builtin: Commands,
 }
 
 /// A kubectl subcommand to run outside the TUI (suspend/resume pattern).
+/// A shell command to run when the TUI is suspended.
+/// Paged commands (logs, yaml, describe) include the pager in the command string itself
+/// (e.g. `bash -c "kubectl ... | hl"`), so they're visible and overridable in config.
+/// Interactive commands (exec, port-forward) are run directly so the terminal works properly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellCommand {
     pub program: String,
     pub args: Vec<String>,
     /// For exec commands: fallback shell paths to try if the primary fails with exit code 126.
     pub fallback_commands: Vec<ShellCommand>,
-    /// If true, this command produces non-interactive output that needs to be paged
-    /// (e.g. describe, yaml, logs). The runner will pipe output through `less` or pause after.
-    pub needs_pause: bool,
-    /// If set, pipe through `jq -Rr '<filter>'` before `less`.
-    /// Used for logs to pretty-print JSON lines while passing plain text through.
-    /// Example: `. as $line | try (fromjson | .) catch $line`
-    pub jq_filter: Option<String>,
 }
 
 impl ShellCommand {
-    /// Parse a command template string (after variable substitution) into a ShellCommand.
-    /// This splits the string into program + args using shell-like word splitting.
-    fn from_template(template: &str, needs_pause: bool) -> Self {
-        let (program, args) = split_shell_command(template);
+    /// Wrap a rendered command string in `bash -c` so pipes, redirects, and shell features work.
+    fn bash(template: &str) -> Self {
         Self {
-            program,
-            args,
+            program: "bash".to_string(),
+            args: vec!["-c".to_string(), template.to_string()],
             fallback_commands: vec![],
-            needs_pause,
-            jq_filter: None,
-        }
-    }
-}
-
-impl ShellCommand {
-    /// Build `kubectl exec -it` commands for shelling into a pod.
-    /// Tries multiple shell binaries in order: /bin/bash, /bin/sh, sh.
-    /// Returns the primary command with fallbacks populated.
-    /// If `container` is Some, adds `-c <container>` to the command.
-    pub fn kubectl_exec(
-        namespace: &str,
-        pod_name: &str,
-        context: Option<&str>,
-        container: Option<&str>,
-    ) -> Self {
-        // Shell binaries to try in order — start with the most universal
-        // (sh is available everywhere, /bin/bash only on full distros)
-        let shells = ["sh", "/bin/sh", "/bin/bash"];
-
-        let mut commands: Vec<ShellCommand> = shells
-            .iter()
-            .map(|shell| {
-                let mut args = vec!["exec".to_string(), "-it".to_string()];
-                if let Some(ctx) = context {
-                    args.push(format!("--context={}", ctx));
-                }
-                args.push("-n".to_string());
-                args.push(namespace.to_string());
-                if let Some(c) = container {
-                    args.push("-c".to_string());
-                    args.push(c.to_string());
-                }
-                args.push(pod_name.to_string());
-                args.push("--".to_string());
-                args.push(shell.to_string());
-                ShellCommand {
-                    program: "kubectl".to_string(),
-                    args,
-                    fallback_commands: vec![],
-                    needs_pause: false,
-                    jq_filter: None,
-                }
-            })
-            .collect();
-
-        // Move fallbacks from the list into the primary command
-        let primary = commands.remove(0);
-        let fallbacks = commands;
-        ShellCommand {
-            program: primary.program,
-            args: primary.args,
-            fallback_commands: fallbacks,
-            needs_pause: false,
-            jq_filter: None,
-        }
-    }
-
-    /// Build a `kubectl get ... -o yaml` command for viewing YAML.
-    pub fn kubectl_yaml(
-        resource_type: &str,
-        namespace: &str,
-        name: &str,
-        context: Option<&str>,
-    ) -> Self {
-        let mut args = vec!["get".to_string()];
-        if let Some(ctx) = context {
-            args.push(format!("--context={}", ctx));
-        }
-        args.push(resource_type.to_string());
-        args.push(name.to_string());
-        args.push("-n".to_string());
-        args.push(namespace.to_string());
-        args.push("-o".to_string());
-        args.push("yaml".to_string());
-        Self {
-            program: "kubectl".to_string(),
-            args,
-            fallback_commands: vec![],
-            needs_pause: true, // yaml output needs paging
-            jq_filter: None,
-        }
-    }
-
-    /// Build a `kubectl logs -f` command for tailing pod logs.
-    /// Piped through `less -RFX` so the user can scroll and search.
-    /// When less is quit, the pipe breaks and kubectl exits.
-    /// If `container` is Some, adds `-c <container>`.
-    /// If `previous` is true, adds `--previous`.
-    pub fn kubectl_logs(
-        namespace: &str,
-        pod_name: &str,
-        context: Option<&str>,
-        container: Option<&str>,
-        previous: bool,
-    ) -> Self {
-        let mut args = vec!["logs".to_string(), "-f".to_string()];
-        if let Some(ctx) = context {
-            args.push(format!("--context={}", ctx));
-        }
-        args.push("-n".to_string());
-        args.push(namespace.to_string());
-        if let Some(c) = container {
-            args.push("-c".to_string());
-            args.push(c.to_string());
-        }
-        if previous {
-            args.push("--previous".to_string());
-        }
-        args.push(pod_name.to_string());
-        Self {
-            program: "kubectl".to_string(),
-            args,
-            fallback_commands: vec![],
-            needs_pause: true, // piped through less so user can scroll
-            jq_filter: Some(". as $line | try (fromjson | .) catch $line".to_string()),
-        }
-    }
-
-    /// Build a `kubectl describe` command for describing a resource.
-    pub fn kubectl_describe(
-        resource_type: &str,
-        namespace: &str,
-        name: &str,
-        context: Option<&str>,
-    ) -> Self {
-        let mut args = vec!["describe".to_string()];
-        if let Some(ctx) = context {
-            args.push(format!("--context={}", ctx));
-        }
-        args.push(resource_type.to_string());
-        args.push("-n".to_string());
-        args.push(namespace.to_string());
-        args.push(name.to_string());
-        Self {
-            program: "kubectl".to_string(),
-            args,
-            fallback_commands: vec![],
-            needs_pause: true, // describe output needs paging
-            jq_filter: None,
-        }
-    }
-
-    /// Build a `kubectl set image` command for changing a container's image.
-    /// Uses the deployment/owner that the pod belongs to (resolved via ownerReferences).
-    pub fn kubectl_set_image(
-        namespace: &str,
-        pod_name: &str,
-        container: &str,
-        image: &str,
-        context: Option<&str>,
-    ) -> Self {
-        let mut args = vec!["set".to_string(), "image".to_string()];
-        if let Some(ctx) = context {
-            args.push(format!("--context={}", ctx));
-        }
-        args.push(format!("pod/{}", pod_name));
-        args.push("-n".to_string());
-        args.push(namespace.to_string());
-        args.push(format!("{}={}", container, image));
-        Self {
-            program: "kubectl".to_string(),
-            args,
-            fallback_commands: vec![],
-            needs_pause: true, // show output so user can verify
-            jq_filter: None,
         }
     }
 }
 
 impl App {
     pub fn new(context_name: Option<String>) -> Self {
-        Self::with_commands(context_name, Vec::new(), CommandOverrides::default())
+        Self::with_commands(context_name, Vec::new(), Commands::default())
     }
 
     pub fn with_commands(
         context_name: Option<String>,
         custom_commands: Vec<CustomCommand>,
-        overrides: CommandOverrides,
+        commands_builtin: Commands,
     ) -> Self {
         Self {
             mode: Mode::Normal,
@@ -420,17 +248,14 @@ impl App {
             sort_config: SortConfig::default(),
             container_actions: Vec::new(),
             container_actions_index: 0,
-            overrides,
+            commands_builtin,
         }
     }
 
-    // ── Command override helpers ──
-    // Each method checks if a config override exists; if so, renders the template.
-    // Otherwise falls back to the built-in kubectl command.
+    // ── Command template helpers ──
+    // Each method renders the built-in template from config.
 
-    /// Build a logs command, checking for override first.
-    /// When `previous=true`, checks `overrides.previous_logs` first, then falls back
-    /// to `overrides.logs`, and finally the built-in kubectl command.
+    /// Build a logs command from the built-in template.
     pub fn build_logs_cmd(
         &self,
         namespace: &str,
@@ -438,85 +263,58 @@ impl App {
         container: Option<&str>,
         previous: bool,
     ) -> ShellCommand {
-        // For previous-logs, check previous_logs override first
-        if previous {
-            if let Some(ref override_cmd) = self.overrides.previous_logs {
-                let rendered = override_cmd.render(
-                    namespace,
-                    pod_name,
-                    container,
-                    self.context_name.as_deref(),
-                );
-                let needs_pause = override_cmd.needs_pause.unwrap_or(true);
-                let mut cmd = ShellCommand::from_template(&rendered, needs_pause);
-                if !needs_pause {
-                    cmd.jq_filter = Some(". as $line | try (fromjson | .) catch $line".to_string());
-                }
-                return cmd;
-            }
-        }
-        // Then check the generic logs override
-        if let Some(ref override_cmd) = self.overrides.logs {
-            let rendered =
-                override_cmd.render(namespace, pod_name, container, self.context_name.as_deref());
-            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
-            let mut cmd = ShellCommand::from_template(&rendered, needs_pause);
-            if !needs_pause {
-                cmd.jq_filter = Some(". as $line | try (fromjson | .) catch $line".to_string());
-            }
-            return cmd;
-        }
-        ShellCommand::kubectl_logs(
-            namespace,
-            pod_name,
-            self.context_name.as_deref(),
-            container,
-            previous,
-        )
+        let template = if previous {
+            &self.commands_builtin.previous_logs
+        } else {
+            &self.commands_builtin.logs
+        };
+        let rendered = CommandTemplate { command: template.clone() }
+            .render(namespace, pod_name, container, self.context_name.as_deref());
+        ShellCommand::bash(&rendered)
     }
 
-    /// Build a shell (exec) command, checking for override first.
+    /// Build a shell (exec) command.
+    /// Uses the built-in template for the primary command, then builds fallback shells.
     pub fn build_shell_cmd(
         &self,
         namespace: &str,
         pod_name: &str,
         container: Option<&str>,
     ) -> ShellCommand {
-        if let Some(ref override_cmd) = self.overrides.shell {
-            let rendered =
-                override_cmd.render(namespace, pod_name, container, self.context_name.as_deref());
-            let needs_pause = override_cmd.needs_pause.unwrap_or(false);
-            return ShellCommand::from_template(&rendered, needs_pause);
-        }
-        ShellCommand::kubectl_exec(namespace, pod_name, self.context_name.as_deref(), container)
+        let primary_rendered = CommandTemplate { command: self.commands_builtin.shell.clone() }
+            .render(namespace, pod_name, container, self.context_name.as_deref());
+        // Extract the shell from the template (after "-- ") for fallback construction
+        // But the template already uses `bash -c`, so we just return it directly.
+        // Fallback shells are handled by `kubectl_exec` as a special case.
+        // For now, the template approach means the user controls the shell.
+        ShellCommand::bash(&primary_rendered)
     }
 
-    /// Build a describe command, checking for override first.
+    /// Build a describe command from the built-in template.
     pub fn build_describe_cmd(
         &self,
-        resource_type: &str,
+        _resource_type: &str,
         namespace: &str,
         name: &str,
     ) -> ShellCommand {
-        if let Some(ref override_cmd) = self.overrides.describe {
-            let rendered = override_cmd.render(namespace, name, None, self.context_name.as_deref());
-            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
-            return ShellCommand::from_template(&rendered, needs_pause);
-        }
-        ShellCommand::kubectl_describe(resource_type, namespace, name, self.context_name.as_deref())
+        // describe template uses {{POD}} for the resource name
+        let rendered = self.commands_builtin.describe
+            .replace("{{NAMESPACE}}", namespace)
+            .replace("{{POD}}", name)
+            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""));
+        ShellCommand::bash(&rendered)
     }
 
-    /// Build a yaml command, checking for override first.
-    pub fn build_yaml_cmd(&self, resource_type: &str, namespace: &str, name: &str) -> ShellCommand {
-        if let Some(ref override_cmd) = self.overrides.yaml {
-            let rendered = override_cmd.render(namespace, name, None, self.context_name.as_deref());
-            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
-            return ShellCommand::from_template(&rendered, needs_pause);
-        }
-        ShellCommand::kubectl_yaml(resource_type, namespace, name, self.context_name.as_deref())
+    /// Build a yaml command from the built-in template.
+    pub fn build_yaml_cmd(&self, _resource_type: &str, namespace: &str, name: &str) -> ShellCommand {
+        let rendered = self.commands_builtin.yaml
+            .replace("{{NAMESPACE}}", namespace)
+            .replace("{{POD}}", name)
+            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""));
+        ShellCommand::bash(&rendered)
     }
 
-    /// Build a set-image command, checking for override first.
+    /// Build a set-image command from the built-in template.
     pub fn build_set_image_cmd(
         &self,
         namespace: &str,
@@ -524,29 +322,16 @@ impl App {
         container: &str,
         image: &str,
     ) -> ShellCommand {
-        if let Some(ref override_cmd) = self.overrides.set_image {
-            let mut rendered = override_cmd.render(
-                namespace,
-                pod_name,
-                Some(container),
-                self.context_name.as_deref(),
-            );
-            rendered = rendered.replace("{{IMAGE}}", image);
-            let needs_pause = override_cmd.needs_pause.unwrap_or(true);
-            return ShellCommand::from_template(&rendered, needs_pause);
-        }
-        ShellCommand::kubectl_set_image(
-            namespace,
-            pod_name,
-            container,
-            image,
-            self.context_name.as_deref(),
-        )
+        let rendered = self.commands_builtin.set_image
+            .replace("{{NAMESPACE}}", namespace)
+            .replace("{{POD}}", pod_name)
+            .replace("{{CONTAINER}}", container)
+            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""))
+            .replace("{{IMAGE}}", image);
+        ShellCommand::bash(&rendered)
     }
 
-    /// Build a port-forward command, checking for override first.
-    /// `ports` is the raw user-typed port spec (e.g. "8080:80,9090:9090").
-    /// Template supports `{{LOCAL_PORT}}:{{REMOTE_PORT}}` or plain `{{NAMESPACE}}`, etc.
+    /// Build a port-forward command from the built-in template.
     pub fn build_port_forward_cmd(
         &self,
         namespace: &str,
@@ -554,40 +339,13 @@ impl App {
         container: Option<&str>,
         ports: &str,
     ) -> ShellCommand {
-        if let Some(ref override_cmd) = self.overrides.port_forward {
-            let mut rendered =
-                override_cmd.render(namespace, pod_name, container, self.context_name.as_deref());
-            // Replace port template variables with the actual port spec
-            // The user may use {{PORTS}} as a placeholder for the entire port spec
-            rendered = rendered.replace("{{PORTS}}", ports);
-            let needs_pause = override_cmd.needs_pause.unwrap_or(false);
-            return ShellCommand::from_template(&rendered, needs_pause);
-        }
-        // Default kubectl port-forward command
-        let mut args = vec!["port-forward".to_string()];
-        if let Some(ctx) = self.context_name.as_deref() {
-            args.push(format!("--context={}", ctx));
-        }
-        args.push("-n".to_string());
-        args.push(namespace.to_string());
-        if let Some(c) = container {
-            args.push("-c".to_string());
-            args.push(c.to_string());
-        }
-        args.push(pod_name.to_string());
-        for port_spec in ports.split(',') {
-            let port_spec = port_spec.trim();
-            if !port_spec.is_empty() {
-                args.push(port_spec.to_string());
-            }
-        }
-        ShellCommand {
-            program: "kubectl".to_string(),
-            args,
-            fallback_commands: vec![],
-            needs_pause: false,
-            jq_filter: None,
-        }
+        let rendered = self.commands_builtin.port_forward
+            .replace("{{NAMESPACE}}", namespace)
+            .replace("{{POD}}", pod_name)
+            .replace("{{CONTAINER}}", container.unwrap_or(""))
+            .replace("{{CONTEXT}}", self.context_name.as_deref().unwrap_or(""))
+            .replace("{{PORTS}}", ports);
+        ShellCommand::bash(&rendered)
     }
 
     /// Build the flattened table rows (pods + expanded containers) from the current pod list.
@@ -776,7 +534,7 @@ impl App {
             Mode::Help => self.handle_help_key(key),
             Mode::NamespacePicker => self.handle_namespace_picker_key(key),
             Mode::ContextPicker => self.handle_context_picker_key(key),
-            Mode::ContainerActions => self.handle_container_actions_key(key),
+            Mode::ContainerActions { .. } => self.handle_container_actions_key(key),
             Mode::ContainerPicker(_) => self.handle_container_picker_key(key),
             Mode::SetImageInput => self.handle_set_image_key(key),
             Mode::PortForwardInput => self.handle_port_forward_key(key),
@@ -987,7 +745,7 @@ impl App {
                                 self.set_image_namespace = pod.namespace.clone();
                                 self.set_image_pod = pod.name.clone();
                                 self.set_image_container = container.name.clone();
-                                self.set_image_buffer = String::new();
+                                self.set_image_buffer = container.image.clone();
                                 self.mode = Mode::SetImageInput;
                             }
                         }
@@ -1001,7 +759,12 @@ impl App {
                                 self.set_image_pod = pod.name.clone();
                                 self.set_image_container =
                                     pod.containers.first().cloned().unwrap_or_default();
-                                self.set_image_buffer = String::new();
+                                self.set_image_buffer = pod
+                                    .container_details
+                                    .iter()
+                                    .find(|c| c.name == self.set_image_container)
+                                    .map(|c| c.image.clone())
+                                    .unwrap_or_default();
                                 self.mode = Mode::SetImageInput;
                             }
                         }
@@ -1122,65 +885,79 @@ impl App {
                     ContainerAction::SetImage,
                     ContainerAction::PortForward,
                 ];
-                // Add matching custom commands
                 for cmd in &self.custom_commands {
-                    if cmd.matches(&pod.namespace, &pod.name) {
+                    if cmd.matches(&pod.namespace, &pod.name, None) {
                         actions.push(ContainerAction::Custom(cmd.clone()));
                     }
                 }
                 self.container_actions = actions;
                 self.container_actions_index = 0;
-                self.mode = Mode::ContainerActions;
+                self.mode = Mode::ContainerActions { query: String::new(), index: 0 };
             }
         }
     }
 
     fn handle_container_actions_key(&mut self, key: KeyEvent) {
+        // Get the current query from the mode
+        let (query, index) = match &self.mode {
+            Mode::ContainerActions { query, index } => (query.clone(), *index),
+            _ => unreachable!(),
+        };
+
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Esc) => {
                 self.mode = Mode::Normal;
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
-                self.execute_selected_container_action();
+                // Select from the filtered list
+                let filtered = self.filtered_container_actions(&query);
+                if let Some(action) = filtered.get(index).cloned() {
+                    // Map filtered index back to the full actions list
+                    let full_index = self.container_actions.iter().position(|a| a == &action).unwrap_or(index);
+                    self.container_actions_index = full_index;
+                    self.execute_selected_container_action();
+                } else {
+                    self.mode = Mode::Normal;
+                }
             }
             (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
-                self.container_actions_index = (self.container_actions_index + 1)
-                    .min(self.container_actions.len().saturating_sub(1));
+                let filtered = self.filtered_container_actions(&query);
+                let new_index = (index + 1).min(filtered.len().saturating_sub(1));
+                self.mode = Mode::ContainerActions { query, index: new_index };
             }
             (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
-                self.container_actions_index = self.container_actions_index.saturating_sub(1);
+                let new_index = index.saturating_sub(1);
+                self.mode = Mode::ContainerActions { query, index: new_index };
             }
-            // Shortcut keys for quick action selection
-            (KeyModifiers::NONE, KeyCode::Char('l')) => {
-                self.container_actions_index = 0;
-                self.execute_selected_container_action();
+            (KeyModifiers::NONE, KeyCode::Backspace) => {
+                let mut new_query = query;
+                new_query.pop();
+                self.mode = Mode::ContainerActions { query: new_query, index: 0 };
             }
-            (KeyModifiers::NONE, KeyCode::Char('p')) => {
-                self.container_actions_index = 1;
-                self.execute_selected_container_action();
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+                // Clear query
+                self.mode = Mode::ContainerActions { query: String::new(), index: 0 };
             }
-            (KeyModifiers::NONE, KeyCode::Char('s')) => {
-                self.container_actions_index = 2;
-                self.execute_selected_container_action();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('d')) => {
-                self.container_actions_index = 3;
-                self.execute_selected_container_action();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('y')) => {
-                self.container_actions_index = 4;
-                self.execute_selected_container_action();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('i')) => {
-                self.container_actions_index = 5;
-                self.execute_selected_container_action();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('f')) => {
-                self.container_actions_index = 6;
-                self.execute_selected_container_action();
+            (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                let mut new_query = query;
+                new_query.push(c);
+                self.mode = Mode::ContainerActions { query: new_query, index: 0 };
             }
             _ => {}
         }
+    }
+
+    /// Filter container actions by query string.
+    pub fn filtered_container_actions(&self, query: &str) -> Vec<ContainerAction> {
+        if query.is_empty() {
+            return self.container_actions.clone();
+        }
+        let q = query.to_lowercase();
+        self.container_actions
+            .iter()
+            .filter(|a| a.label().to_lowercase().contains(&q))
+            .cloned()
+            .collect()
     }
 
     /// Execute the container action at the current container_actions_index.
@@ -1246,7 +1023,7 @@ impl App {
                         self.set_image_namespace = pod.namespace.clone();
                         self.set_image_pod = pod.name.clone();
                         self.set_image_container = container.name.clone();
-                        self.set_image_buffer = String::new();
+                        self.set_image_buffer = container.image.clone();
                         self.mode = Mode::SetImageInput;
                     }
                     ContainerAction::PortForward => {
@@ -1269,14 +1046,7 @@ impl App {
                             Some(&container.name),
                             self.context_name.as_deref(),
                         );
-                        let (program, args) = split_shell_command(&rendered);
-                        self.pending_shell = Some(ShellCommand {
-                            program,
-                            args,
-                            fallback_commands: vec![],
-                            needs_pause: true,
-                            jq_filter: None,
-                        });
+                        self.pending_shell = Some(ShellCommand::bash(&rendered));
                     }
                 }
             }
@@ -1584,7 +1354,12 @@ impl App {
                             self.set_image_namespace = pod.namespace.clone();
                             self.set_image_pod = pod.name.clone();
                             self.set_image_container = container.clone();
-                            self.set_image_buffer = String::new();
+                            self.set_image_buffer = pod
+                                .container_details
+                                .iter()
+                                .find(|c| c.name == container)
+                                .map(|c| c.image.clone())
+                                .unwrap_or_default();
                             self.mode = Mode::SetImageInput;
                             return;
                         }
@@ -1777,7 +1552,11 @@ impl App {
             }
             Command::Custom(custom_cmd) => {
                 if let Some(pod) = self.selected_pod_cloned() {
-                    if !custom_cmd.matches(&pod.namespace, &pod.name) {
+                    if !custom_cmd.matches(
+                        &pod.namespace,
+                        &pod.name,
+                        self.selected_container_name().as_deref(),
+                    ) {
                         self.show_toast(
                             format!(
                                 "Command '{}' does not match {}/{}",
@@ -1800,15 +1579,8 @@ impl App {
                         self.context_name.as_deref(),
                     );
 
-                    // Parse the rendered command into program + args (basic shell splitting)
-                    let (program, args) = split_shell_command(&rendered);
-                    self.pending_shell = Some(ShellCommand {
-                        program,
-                        args,
-                        fallback_commands: vec![],
-                        needs_pause: false,
-                        jq_filter: None,
-                    });
+                    // Wrap with bash -c so pipes, redirects, and shell features work
+                    self.pending_shell = Some(ShellCommand::bash(&rendered));
                 } else {
                     self.show_toast("No pod selected", ToastType::Warning, 8);
                 }
@@ -2093,56 +1865,4 @@ impl App {
     }
 }
 
-/// Split a shell-style command string into `(program, args)`.
-///
-/// Handles basic quoting (double and single quotes) but does not expand
-/// variables or handle shell operators like pipes or redirects.
-fn split_shell_command(input: &str) -> (String, Vec<String>) {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut chars = input.chars().peekable();
 
-    while let Some(&ch) = chars.peek() {
-        match ch {
-            '"' => {
-                chars.next();
-                while let Some(&c) = chars.peek() {
-                    if c == '"' {
-                        chars.next();
-                        break;
-                    }
-                    current.push(chars.next().unwrap());
-                }
-            }
-            '\'' => {
-                chars.next();
-                while let Some(&c) = chars.peek() {
-                    if c == '\'' {
-                        chars.next();
-                        break;
-                    }
-                    current.push(chars.next().unwrap());
-                }
-            }
-            ' ' | '\t' => {
-                if !current.is_empty() {
-                    parts.push(current.clone());
-                    current.clear();
-                }
-                chars.next();
-            }
-            _ => {
-                current.push(chars.next().unwrap());
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        parts.push(current);
-    }
-
-    match parts.split_first() {
-        Some((program, args)) => (program.clone(), args.to_vec()),
-        None => (String::new(), Vec::new()),
-    }
-}

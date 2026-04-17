@@ -26,6 +26,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 toml = "0.8"
+serde_yaml = "0.9"
 jiff = "0.2"
 futures = "0.3"
 unicode-width = "0.2"

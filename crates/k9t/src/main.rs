@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -27,7 +26,7 @@ fn is_fullscreen_overlay(mode: &Mode) -> bool {
             | Mode::NamespacePicker
             | Mode::ContextPicker
             | Mode::ContainerPicker(_)
-            | Mode::ContainerActions
+            | Mode::ContainerActions { .. }
             | Mode::ConfirmAction(_)
             | Mode::SetImageInput
             | Mode::PortForwardInput
@@ -50,7 +49,6 @@ struct Cli {
 }
 
 /// Print the command being run so the user can see it and copy-paste it if needed.
-/// For piped commands, shows the full pipeline.
 fn print_command(program: &str, args: &[String]) {
     let cmd_line = if args.is_empty() {
         program.to_string()
@@ -58,11 +56,6 @@ fn print_command(program: &str, args: &[String]) {
         format!("{} {}", program, args.join(" "))
     };
     eprintln!("\x1b[2m→ {}\x1b[0m", cmd_line);
-}
-
-/// Print a full pipeline command (e.g. kubectl ... | jq ... | less).
-fn print_pipeline(parts: &[&str]) {
-    eprintln!("\x1b[2m→ {}\x1b[0m", parts.join(" | "));
 }
 
 /// Ignore SIGINT in k9t so that Ctrl-C during a subprocess only kills the child,
@@ -96,11 +89,9 @@ trait PreExecSigint: std::os::unix::process::CommandExt {
 }
 impl PreExecSigint for std::process::Command {}
 
-/// Suspend the TUI, run a kubectl subcommand (shell, edit, yaml view), then resume the TUI.
+/// Suspend the TUI, run a kubectl subcommand (shell, logs, describe, yaml), then resume the TUI.
 /// For shell exec commands, automatically retries fallback shells if exit code is 126
 /// (shell not found in container).
-/// For non-interactive commands (describe, yaml, delete), pipes output through `less -RFX`
-/// so the user can scroll and the output doesn't flash away.
 /// Returns a re-initialized terminal.
 fn run_subcommand(
     cmd: &ShellCommand,
@@ -112,24 +103,19 @@ fn run_subcommand(
     // The child restores SIG_DFL via pre_exec so it still responds to Ctrl-C.
     ignore_sigint();
 
-    if cmd.needs_pause {
-        // Non-interactive command: pipe through less -RFX
-        run_paged_command(&cmd.program, &cmd.args, cmd.jq_filter.as_deref());
-    } else {
-        // Interactive command (exec, logs -f, edit): run directly
-        print_command(&cmd.program, &cmd.args);
-        let exit_code = run_single_command(&cmd.program, &cmd.args);
+    // Run command directly — user can scroll back in terminal
+    print_command(&cmd.program, &cmd.args);
+    let exit_code = run_single_command(&cmd.program, &cmd.args);
 
-        // For exec commands, if exit code is 126/127 (command not found in container),
-        // try each fallback shell in order (sh → /bin/sh → /bin/bash)
-        if exit_code == Some(126) || exit_code == Some(127) {
-            for fallback in &cmd.fallback_commands {
-                print_command(&fallback.program, &fallback.args);
-                let fallback_code = run_single_command(&fallback.program, &fallback.args);
-                // If the shell connected or user exited normally, stop retrying
-                if fallback_code != Some(126) && fallback_code != Some(127) {
-                    break;
-                }
+    // For exec commands, if exit code is 126/127 (command not found in container),
+    // try each fallback shell in order (sh → /bin/sh → /bin/bash)
+    if exit_code == Some(126) || exit_code == Some(127) {
+        for fallback in &cmd.fallback_commands {
+            print_command(&fallback.program, &fallback.args);
+            let fallback_code = run_single_command(&fallback.program, &fallback.args);
+            // If the shell connected or user exited normally, stop retrying
+            if fallback_code != Some(126) && fallback_code != Some(127) {
+                break;
             }
         }
     }
@@ -143,208 +129,6 @@ fn run_subcommand(
 
     // Re-initialize the terminal for TUI rendering
     ratatui::init()
-}
-
-/// Check if an external command exists on PATH.
-fn command_exists(name: &str) -> bool {
-    std::process::Command::new(name)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
-}
-
-/// Kill and wait on all remaining child processes to prevent zombies.
-fn reap_children(children: &mut Vec<std::process::Child>) {
-    for child in children.iter_mut() {
-        // Try to kill first; if the child already exited, kill returns an error we ignore.
-        let _ = child.kill();
-    }
-    for child in children.iter_mut() {
-        // Wait to reap each child so it doesn't become a zombie.
-        let _ = child.wait();
-    }
-    children.clear();
-}
-
-/// Run a command and pipe its output through `less -RFX` for paging.
-/// When `jq_filter` is set, pipes through `jq` for JSON log pretty-printing,
-/// then optionally through `bat --style=plain` for syntax coloring if available.
-/// Falls back to plain `less` if neither is available.
-///
-/// All spawned children are tracked. After `less` exits, any remaining children
-/// are killed and reaped to prevent zombies or orphan output.
-fn run_paged_command(program: &str, args: &[String], jq_filter: Option<&str>) {
-    let less_available = command_exists("less");
-    let use_jq = jq_filter.is_some() && command_exists("jq");
-    let use_bat = command_exists("bat");
-
-    // Print the full pipeline so the user can see and copy-paste it
-    {
-        let kubectl_cmd = format!("{} {}", program, args.join(" "));
-        if use_jq {
-            if let Some(filter) = jq_filter {
-                let mut parts: Vec<String> = vec![kubectl_cmd.clone()];
-                parts.push(format!("jq --unbuffered -Rr '{}'", filter));
-                if use_bat {
-                    parts.push("bat --style=plain --language json".to_string());
-                }
-                parts.push("less -RFX".to_string());
-                let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
-                print_pipeline(&refs);
-            }
-        } else if use_bat {
-            print_pipeline(&[&kubectl_cmd, "bat --style=plain", "less -RFX"]);
-        } else {
-            print_command(program, args);
-        }
-        // Flush so the user sees it before less takes over the terminal
-        let _ = std::io::stderr().flush();
-    }
-
-    if less_available {
-        // Track all children so we can kill and reap them after less exits.
-        let mut children: Vec<std::process::Child> = Vec::new();
-
-        // Spawn kubectl with piped stdout
-        let mut kubectl = match std::process::Command::new(program)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .pre_exec_restore_sigint()
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(e) => {
-                eprintln!("\nk9t: failed to run '{}': {}", program, e);
-                eprintln!("Press Enter to return to k9t...");
-                let _ = std::io::stdin().read_line(&mut String::new());
-                return;
-            }
-        };
-
-        let kubectl_stdout = kubectl.stdout.take().unwrap();
-        children.push(kubectl);
-
-        // Build the pipeline and collect the stdin for `less`
-        let less_stdin = if let Some(filter) = jq_filter.filter(|_| use_jq) {
-            // kubectl → jq → [bat] → less
-            let mut jq = match std::process::Command::new("jq")
-                .arg("--unbuffered")
-                .arg("-Rr")
-                .arg(filter)
-                .stdin(kubectl_stdout)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .pre_exec_restore_sigint()
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("\nk9t: failed to run 'jq': {}", e);
-                    eprintln!("Press Enter to return to k9t...");
-                    let _ = std::io::stdin().read_line(&mut String::new());
-                    reap_children(&mut children);
-                    return;
-                }
-            };
-            let jq_stdout = jq.stdout.take().unwrap();
-            children.push(jq);
-
-            if use_bat {
-                let mut bat = match std::process::Command::new("bat")
-                    .arg("--style=plain")
-                    .arg("--language")
-                    .arg("json")
-                    .stdin(jq_stdout)
-                    .stdout(std::process::Stdio::piped())
-                    .pre_exec_restore_sigint()
-                    .spawn()
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("\nk9t: failed to run 'bat': {}", e);
-                        eprintln!("Press Enter to return to k9t...");
-                        let _ = std::io::stdin().read_line(&mut String::new());
-                        reap_children(&mut children);
-                        return;
-                    }
-                };
-                let bat_stdout = bat.stdout.take().unwrap();
-                children.push(bat);
-                bat_stdout
-            } else {
-                jq_stdout
-            }
-        } else if use_bat {
-            // kubectl → bat → less
-            let mut bat = match std::process::Command::new("bat")
-                .arg("--style=plain")
-                .stdin(kubectl_stdout)
-                .stdout(std::process::Stdio::piped())
-                .pre_exec_restore_sigint()
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("\nk9t: failed to run 'bat': {}", e);
-                    eprintln!("Press Enter to return to k9t...");
-                    let _ = std::io::stdin().read_line(&mut String::new());
-                    reap_children(&mut children);
-                    return;
-                }
-            };
-            let bat_stdout = bat.stdout.take().unwrap();
-            children.push(bat);
-            bat_stdout
-        } else {
-            // kubectl → less (no jq, no bat)
-            kubectl_stdout
-        };
-
-        // Spawn less as the final stage
-        let mut less = match std::process::Command::new("less")
-            .arg("-RFX")
-            .stdin(less_stdin)
-            .pre_exec_restore_sigint()
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("\nk9t: failed to run 'less': {}", e);
-                eprintln!("Press Enter to return to k9t...");
-                let _ = std::io::stdin().read_line(&mut String::new());
-                reap_children(&mut children);
-                return;
-            }
-        };
-
-        // Wait for less to finish (user presses q or reaches end of input)
-        let _ = less.wait();
-
-        // Kill and reap any remaining children in the pipeline.
-        // When less exits, its stdin pipe breaks, which should send SIGPIPE
-        // to upstream processes, but some may linger. Forcefully clean up.
-        reap_children(&mut children);
-    } else {
-        // No less available — run command and pause after
-        let status = std::process::Command::new(program)
-            .args(args)
-            .pre_exec_restore_sigint()
-            .status();
-
-        if let Ok(s) = status
-            && !s.success()
-        {
-            eprintln!(
-                "\nk9t: command exited with code: {}",
-                s.code().unwrap_or(-1)
-            );
-        }
-        eprintln!("\n--- Press Enter to return to k9t ---");
-        let _ = std::io::stdin().read_line(&mut String::new());
-    }
 }
 
 /// Run a single command and return its exit code (if it ran at all).
@@ -362,9 +146,13 @@ fn run_single_command(program: &str, args: &[String]) -> Option<i32> {
     match status {
         Ok(s) => {
             let code = s.code();
-            if !s.success() && code != Some(126) && code != Some(127) && code != Some(130) {
+            if !s.success()
+                && code != Some(126)
+                && code != Some(127)
+                && !matches!(code, Some(130) | Some(141))
+            {
                 // 126/127 = shell not found (retry with fallbacks)
-                // 130 = Ctrl+C exit (normal for interactive commands like logs -f)
+                // 130 = Ctrl-C, 141 = SIGPIPE (normal exits, not errors)
                 eprintln!("\nk9t: command exited with code: {}", code.unwrap_or(-1));
                 eprintln!("Press Enter to return to k9t...");
                 let _ = std::io::stdin().read_line(&mut String::new());
@@ -451,7 +239,7 @@ async fn main() -> Result<()> {
     let mut app = App::with_commands(
         resolve_context_name(cli.context.as_deref()).await.ok(),
         config.commands.clone(),
-        config.overrides.clone(),
+        config.commands_builtin.clone(),
     );
     if let Some(ns) = cli.namespace.as_deref().or(config.namespace.as_deref()) {
         app.namespace_filter = ns.to_string();
@@ -626,7 +414,7 @@ async fn main() -> Result<()> {
                 Mode::Help => "HELP",
                 Mode::NamespacePicker => "NAMESPACES",
                 Mode::ContainerPicker(_) => "CONTAINERS",
-                Mode::ContainerActions => "ACTIONS",
+                Mode::ContainerActions { .. } => "ACTIONS",
                 Mode::ContextPicker => "CONTEXTS",
                 Mode::SetImageInput => "SET IMAGE",
                 Mode::PortForwardInput => "PORT FORWARD",
@@ -803,7 +591,7 @@ async fn main() -> Result<()> {
                         &theme,
                     );
                 }
-                Mode::ContainerActions => {
+                Mode::ContainerActions { .. } => {
                     let (pod_name, container_name) =
                         if let Some(row) = app.table_rows().get(app.selected_index) {
                             match row {
@@ -824,11 +612,18 @@ async fn main() -> Result<()> {
                         } else {
                             (String::new(), String::new())
                         };
+                    let (query, index) = match &app.mode {
+                        k9t_app::Mode::ContainerActions { query, index } => (query.clone(), *index),
+                        _ => (String::new(), 0),
+                    };
+                    let filtered = app.filtered_container_actions(&query);
+                    let clamped_index = index.min(filtered.len().saturating_sub(1));
                     container_actions::render_container_actions(
                         frame,
                         frame.area(),
-                        &app.container_actions,
-                        app.container_actions_index,
+                        &filtered,
+                        clamped_index,
+                        &query,
                         &pod_name,
                         &container_name,
                         &theme,
@@ -838,15 +633,16 @@ async fn main() -> Result<()> {
                     let container = app.set_image_container.as_str();
                     let pod = app.set_image_pod.as_str();
                     let ns = app.set_image_namespace.as_str();
-                    let label = format!("Set image for {ns}/{pod}/{container}:");
+                    let label = format!("{ns}/{pod}/{container}");
                     let input = app.set_image_buffer.as_str();
+                    let placeholder = if input.is_empty() { "image:tag" } else { "" };
                     confirm_dialog::render_input_dialog(
                         frame,
                         area,
                         "Set Image",
                         &label,
                         input,
-                        "<image:tag>",
+                        placeholder,
                         "[Enter]apply  [Esc]cancel  [Ctrl+U]clear",
                         &theme,
                     );
@@ -1025,7 +821,7 @@ async fn main() -> Result<()> {
                     if !app.custom_commands.is_empty() {
                         right_lines.push(ratatui::text::Line::from(""));
                         right_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                            " Custom Commands  (~/.config/k9t.json)",
+                            " Custom Commands  (~/.config/k9t.yaml)",
                             title,
                         )));
                         for cc in &app.custom_commands {

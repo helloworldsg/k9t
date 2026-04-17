@@ -62,6 +62,8 @@ pub struct ContainerDetail {
     pub image: String,
     /// Container ports from the pod spec.
     pub ports: Vec<ContainerPortInfo>,
+    /// True if this is an init container.
+    pub is_init: bool,
 }
 
 // PodInfo
@@ -80,6 +82,64 @@ pub struct PodInfo {
     pub container_details: Vec<ContainerDetail>,
 }
 
+fn container_detail_from_status(
+    cs: &k8s_openapi::api::core::v1::ContainerStatus,
+    spec_containers: &[&k8s_openapi::api::core::v1::Container],
+    is_init: bool,
+) -> ContainerDetail {
+    let (state_str, reason_str) = cs
+        .state
+        .as_ref()
+        .map(|s| {
+            if let Some(_running) = &s.running {
+                ("Running".to_string(), String::new())
+            } else if let Some(waiting) = &s.waiting {
+                let reason = waiting.reason.as_deref().unwrap_or("Waiting").to_string();
+                (reason.clone(), reason)
+            } else if let Some(terminated) = &s.terminated {
+                let reason = terminated
+                    .reason
+                    .as_deref()
+                    .unwrap_or("Terminated")
+                    .to_string();
+                (reason.clone(), reason)
+            } else {
+                ("Unknown".to_string(), String::new())
+            }
+        })
+        .unwrap_or(("Unknown".to_string(), String::new()));
+
+    let ports: Vec<ContainerPortInfo> = spec_containers
+        .iter()
+        .find(|sc| sc.name == cs.name)
+        .map(|sc| {
+            sc.ports
+                .as_ref()
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| ContainerPortInfo {
+                            port: p.container_port as u16,
+                            name: p.name.clone(),
+                            protocol: p.protocol.clone().unwrap_or_else(|| "TCP".to_string()),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    ContainerDetail {
+        name: cs.name.clone(),
+        ready: cs.ready,
+        restart_count: cs.restart_count as u32,
+        status: state_str,
+        reason: reason_str,
+        image: cs.image.clone(),
+        ports,
+        is_init,
+    }
+}
+
 impl From<&Pod> for PodInfo {
     fn from(pod: &Pod) -> Self {
         let namespace = pod.namespace().unwrap_or_default();
@@ -87,7 +147,6 @@ impl From<&Pod> for PodInfo {
 
         let spec_containers = pod.spec.as_ref().map(|s| s.containers.len()).unwrap_or(0);
 
-        // Extract container names for shell/exec support
         let containers: Vec<String> = pod
             .spec
             .as_ref()
@@ -105,80 +164,45 @@ impl From<&Pod> for PodInfo {
             })
             .unwrap_or((0, 0));
 
-        // Extract per-container status details, cross-referencing ports from the pod spec
         let spec_containers_list: Vec<&k8s_openapi::api::core::v1::Container> = pod
             .spec
             .as_ref()
             .map(|s| s.containers.iter().collect())
             .unwrap_or_default();
 
-        let container_details: Vec<ContainerDetail> = pod
+        let spec_init_containers_list: Vec<&k8s_openapi::api::core::v1::Container> = pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.init_containers.as_ref())
+            .map(|ics| ics.iter().collect())
+            .unwrap_or_default();
+
+        let main_details: Vec<ContainerDetail> = pod
             .status
             .as_ref()
             .and_then(|s| s.container_statuses.as_ref())
             .map(|statuses| {
                 statuses
                     .iter()
-                    .map(|cs| {
-                        let (state_str, reason_str) = cs
-                            .state
-                            .as_ref()
-                            .map(|s| {
-                                if let Some(_running) = &s.running {
-                                    ("Running".to_string(), String::new())
-                                } else if let Some(waiting) = &s.waiting {
-                                    let reason =
-                                        waiting.reason.as_deref().unwrap_or("Waiting").to_string();
-                                    (reason.clone(), reason)
-                                } else if let Some(terminated) = &s.terminated {
-                                    let reason = terminated
-                                        .reason
-                                        .as_deref()
-                                        .unwrap_or("Terminated")
-                                        .to_string();
-                                    (reason.clone(), reason)
-                                } else {
-                                    ("Unknown".to_string(), String::new())
-                                }
-                            })
-                            .unwrap_or(("Unknown".to_string(), String::new()));
-
-                        // Find matching spec container to extract ports
-                        let ports: Vec<ContainerPortInfo> = spec_containers_list
-                            .iter()
-                            .find(|sc| sc.name == cs.name)
-                            .map(|sc| {
-                                sc.ports
-                                    .as_ref()
-                                    .map(|ps| {
-                                        ps.iter()
-                                            .map(|p| ContainerPortInfo {
-                                                port: p.container_port as u16,
-                                                name: p.name.clone(),
-                                                protocol: p
-                                                    .protocol
-                                                    .clone()
-                                                    .unwrap_or_else(|| "TCP".to_string()),
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default()
-                            })
-                            .unwrap_or_default();
-
-                        ContainerDetail {
-                            name: cs.name.clone(),
-                            ready: cs.ready,
-                            restart_count: cs.restart_count as u32,
-                            status: state_str,
-                            reason: reason_str,
-                            image: cs.image.clone(),
-                            ports,
-                        }
-                    })
+                    .map(|cs| container_detail_from_status(cs, &spec_containers_list, false))
                     .collect()
             })
             .unwrap_or_default();
+
+        let init_details: Vec<ContainerDetail> = pod
+            .status
+            .as_ref()
+            .and_then(|s| s.init_container_statuses.as_ref())
+            .map(|statuses| {
+                statuses
+                    .iter()
+                    .map(|cs| container_detail_from_status(cs, &spec_init_containers_list, true))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let container_details: Vec<ContainerDetail> =
+            init_details.into_iter().chain(main_details).collect();
 
         let ready = if spec_containers == 0 {
             "0/0".to_string()
@@ -219,18 +243,27 @@ fn derive_pod_status(pod: &Pod) -> String {
         return phase;
     }
 
-    let has_crash_loop = pod
+    let all_statuses: Vec<&k8s_openapi::api::core::v1::ContainerStatus> = pod
         .status
         .as_ref()
-        .and_then(|s| s.container_statuses.as_ref())
-        .is_some_and(|statuses| {
-            statuses.iter().any(|cs| {
-                cs.state
-                    .as_ref()
-                    .and_then(|s| s.waiting.as_ref())
-                    .is_some_and(|w| w.reason.as_ref().is_some_and(|r| r == "CrashLoopBackOff"))
-            })
-        });
+        .map(|s| {
+            let mut v: Vec<&k8s_openapi::api::core::v1::ContainerStatus> = Vec::new();
+            if let Some(ref cs) = s.container_statuses {
+                v.extend(cs.iter());
+            }
+            if let Some(ref ics) = s.init_container_statuses {
+                v.extend(ics.iter());
+            }
+            v
+        })
+        .unwrap_or_default();
+
+    let has_crash_loop = all_statuses.iter().any(|cs| {
+        cs.state
+            .as_ref()
+            .and_then(|s| s.waiting.as_ref())
+            .is_some_and(|w| w.reason.as_ref().is_some_and(|r| r == "CrashLoopBackOff"))
+    });
 
     if has_crash_loop {
         return "CrashLoopBackOff".to_string();

@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Clear, Paragraph},
+    Frame,
 };
 
 use crate::theme::Theme;
@@ -61,6 +61,8 @@ pub fn render_confirm_dialog(
 }
 
 /// Render a centered input dialog for text input (e.g. set image, port forward).
+/// Uses a multi-line layout: label line(s) on top, input field on its own line,
+/// so long resource names don't push the cursor off screen.
 #[allow(clippy::too_many_arguments)]
 pub fn render_input_dialog(
     frame: &mut Frame,
@@ -72,8 +74,13 @@ pub fn render_input_dialog(
     hint: &str,
     theme: &Theme,
 ) {
-    let popup_width = 70.min(area.width);
-    let popup_height = 5.min(area.height);
+    // Calculate width: ensure the input line fits label prefix + input with room to spare
+    // Use at least 50 chars, or wider if the content needs it
+    let min_content_width = 50;
+    let input_line_width = label.len().max(placeholder.len()) + 4;
+    let content_width = min_content_width.max(input_line_width);
+    let popup_width = (content_width as u16 + 2).min(area.width); // +2 for borders
+    let popup_height = 7.min(area.height);
     let popup_x = area.width.saturating_sub(popup_width) / 2;
     let popup_y = area.height.saturating_sub(popup_height) / 2;
 
@@ -88,24 +95,42 @@ pub fn render_input_dialog(
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(format!(" {} ", title))
+        .title(Span::styled(format!(" {} ", title), theme.accent_primary()))
         .title_alignment(Alignment::Center)
         .style(theme.bg_overlay());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let [input_area, hint_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    // Layout: label, blank, input, hint
+    let [label_area, _, input_area, hint_area] = Layout::vertical([
+        Constraint::Length(1), // label
+        Constraint::Length(1), // blank line
+        Constraint::Length(1), // input with cursor
+        Constraint::Min(0),    // hint at bottom
+    ])
+    .areas(inner);
 
-    // Input line: label + typed text + cursor + optional placeholder
+    // Label line (muted, showing context)
+    let label_para = Paragraph::new(format!(" {}", label)).style(theme.fg_muted());
+    frame.render_widget(label_para, label_area);
+
+    // Input line: the typed text + block cursor + optional placeholder
+    let inner_width = input_area.width as usize;
+    // Scroll the input if it exceeds the visible width — show the tail end so the cursor is visible
+    let visible_input = if input.len() + 2 > inner_width {
+        let start = input.len().saturating_sub(inner_width.saturating_sub(3));
+        &input[start..]
+    } else {
+        input
+    };
+
     let mut spans = vec![
-        Span::styled(format!(" {} ", label), theme.fg_muted()),
-        Span::styled(input.to_string(), theme.fg_default()),
+        Span::styled(visible_input.to_string(), theme.fg_default()),
         Span::styled("█", theme.accent_primary()),
     ];
     if input.is_empty() {
-        spans.push(Span::styled(format!(" {}", placeholder), theme.fg_muted()));
+        spans.push(Span::styled(placeholder.to_string(), theme.fg_muted()));
     }
     let input_para = Paragraph::new(Line::from(spans)).style(theme.bg_overlay());
     frame.render_widget(input_para, input_area);

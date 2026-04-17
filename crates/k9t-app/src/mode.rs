@@ -7,7 +7,7 @@ pub enum Mode {
     NamespacePicker,
     ContextPicker,
     ContainerPicker(ContainerPickerIntent),
-    ContainerActions,
+    ContainerActions { query: String, index: usize },
     ConfirmAction(ConfirmContext),
     SetImageInput,
     PortForwardInput,
@@ -39,35 +39,18 @@ impl ContainerAction {
     /// Label shown in the actions dialog.
     pub fn label(&self) -> String {
         match self {
-            ContainerAction::Logs => "Logs (kubectl logs -f)".to_string(),
-            ContainerAction::PreviousLogs => "Previous logs (kubectl logs --previous)".to_string(),
-            ContainerAction::Shell => "Shell (kubectl exec)".to_string(),
-            ContainerAction::Describe => "Describe (kubectl describe)".to_string(),
-            ContainerAction::Yaml => "YAML (kubectl get -o yaml)".to_string(),
-            ContainerAction::SetImage => "Set image (kubectl set image)".to_string(),
-            ContainerAction::PortForward => "Port forward (kubectl port-forward)".to_string(),
+            ContainerAction::Logs => "Logs".to_string(),
+            ContainerAction::PreviousLogs => "Previous logs".to_string(),
+            ContainerAction::Shell => "Shell".to_string(),
+            ContainerAction::Describe => "Describe".to_string(),
+            ContainerAction::Yaml => "YAML".to_string(),
+            ContainerAction::SetImage => "Set image".to_string(),
+            ContainerAction::PortForward => "Port forward".to_string(),
             ContainerAction::Custom(cmd) => format!(
                 ":{} {}",
                 cmd.name,
                 cmd.description.as_deref().unwrap_or(&cmd.command)
             ),
-        }
-    }
-
-    /// Shortcut key shown in the dialog.
-    pub fn shortcut(&self) -> char {
-        match self {
-            ContainerAction::Logs => 'l',
-            ContainerAction::PreviousLogs => 'p',
-            ContainerAction::Shell => 's',
-            ContainerAction::Describe => 'd',
-            ContainerAction::Yaml => 'y',
-            ContainerAction::SetImage => 'i',
-            ContainerAction::PortForward => 'f',
-            ContainerAction::Custom(cmd) => {
-                // Use first char of command name as shortcut
-                cmd.name.chars().next().unwrap_or(' ')
-            }
         }
     }
 }

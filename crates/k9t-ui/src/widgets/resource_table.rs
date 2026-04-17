@@ -21,7 +21,10 @@ fn status_style(theme: &Theme, status: &str) -> Style {
 
 /// Container status uses a slightly different mapping:
 /// "Running" = green, "Waiting" or common wait reasons = yellow, "Terminated" = red-ish.
-fn container_status_style(theme: &Theme, status: &str) -> Style {
+fn container_status_style(theme: &Theme, status: &str, is_init: bool) -> Style {
+    if is_init && status == "Completed" {
+        return theme.fg_muted();
+    }
     match status {
         "Running" => theme.status_success(),
         "Completed" => theme.fg_muted(),
@@ -30,7 +33,7 @@ fn container_status_style(theme: &Theme, status: &str) -> Style {
         s if s.contains("Error") || s == "ImagePullBackOff" || s == "ErrImagePull" => {
             theme.status_error()
         }
-        _ => theme.status_warning(), // Waiting, ContainerCreating, etc.
+        _ => theme.status_warning(),
     }
 }
 
@@ -129,9 +132,9 @@ pub fn render_pod_table(
                 TableRow::Container {
                     container, is_last, ..
                 } => {
-                    // Tree-style indentation
                     let tree_prefix = if *is_last { "  └─ " } else { "  ├─ " };
-                    let name_cell = format!("{}{}", tree_prefix, container.name);
+                    let init_tag = if container.is_init { "Ⓘ " } else { "" };
+                    let name_cell = format!("{}{}{}", tree_prefix, init_tag, container.name);
 
                     // Ready: ✓ or ✗
                     let ready_str = if container.ready { "✓" } else { "✗" };
@@ -143,7 +146,7 @@ pub fn render_pod_table(
 
                     let status_cell = Cell::from(Span::styled(
                         &container.status,
-                        container_status_style(theme, &container.status),
+                        container_status_style(theme, &container.status, container.is_init),
                     ));
 
                     // Show port info if available
