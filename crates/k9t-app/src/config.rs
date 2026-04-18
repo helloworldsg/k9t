@@ -173,6 +173,12 @@ pub struct Commands {
     pub list_configmaps: String,
     /// List secrets. Default: fetches and displays all Secrets in namespace
     pub list_secrets: String,
+    /// List events. Default: fetches and displays all Events in namespace
+    pub list_events: String,
+    /// List routes (HTTPRoute + Ingress). Default: fetches and displays all HTTP Routes and Ingresses
+    pub list_routes: String,
+    /// List network policies. Default: fetches and displays all NetworkPolicies
+    pub list_netpol: String,
 }
 
 impl Default for Commands {
@@ -181,14 +187,17 @@ impl Default for Commands {
             logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl".to_string(),
             previous_logs: "kubectl logs --previous -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl".to_string(),
             shell: "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh".to_string(),
-            describe: "kubectl describe pod -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
-            yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language yaml --style=changes".to_string(),
+            describe: "kubectl describe pod -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language=yaml --style=changes --paging=always".to_string(),
+            yaml: "kubectl get pod -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | bat --language=yaml --style=changes --paging=always".to_string(),
             set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}".to_string(),
             port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}".to_string(),
             debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}".to_string(),
-            list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \\; 2>/dev/null | head -100; done' | less".to_string(),
-            list_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -n {{NAMESPACE}} -o yaml --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml --style=changes".to_string(),
-            list_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"=== \\$s ===\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | hl".to_string(),
+            list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"##### $m #####\"; find \"$m\" -maxdepth 1 -exec du -s {} \\; 2>/dev/null; done' | bat --language=dotenv --style=changes --paging=always".to_string(),
+            list_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -n {{NAMESPACE}} -o yaml --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml --style=changes --paging=always".to_string(),
+            list_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"###### \\$s ######\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | bat --language=dotenv --style=changes --paging=always".to_string(),
+            list_events: "kubectl get events -n {{NAMESPACE}} --context {{CONTEXT}} --field-selector involvedObject.name={{POD}} --sort-by='.lastTimestamp' | bat --language csv --style=changes --paging=always".to_string(),
+            list_routes: "(echo \"### HTTPRoutes ###\" && kubectl get httproutes -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '.items[] | select(.spec.targetRefs[]? | .name == \"{{POD}}\") | .metadata.name' 2>/dev/null | xargs -I{} kubectl get httproute {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml 2>/dev/null || echo \"None\"; echo -e \"\\n### Ingresses ###\" && kubectl get ingress -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml ) | bat --language yaml --style=changes --paging=always".to_string(),
+            list_netpol: "kubectl get networkpolicies -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '[.items[] | select(.spec.podSelector.matchLabels)] | .[] | .metadata.name' 2>/dev/null | xargs -I{} kubectl get networkpolicy {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml | bat --language yaml --style=changes --paging=always".to_string(),
         }
     }
 }

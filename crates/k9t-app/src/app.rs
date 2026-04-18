@@ -424,6 +424,51 @@ impl App {
         )
     }
 
+    pub fn build_list_events_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.list_events,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
+    }
+
+    pub fn build_list_routes_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.list_routes,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
+    }
+
+    pub fn build_list_netpol_cmd(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+        container: Option<&str>,
+    ) -> ShellCommand {
+        self.render_builtin(
+            &self.commands_builtin.list_netpol,
+            namespace,
+            pod_name,
+            container,
+            &[],
+        )
+    }
+
     /// Build the flattened table rows (pods + expanded containers) from the current pod list.
     /// This is the view the table widget renders and the selection index navigates.
     /// When a search filter is active, only matching pods (and their containers) are shown.
@@ -988,6 +1033,9 @@ impl App {
                     ContainerAction::ListVolumes,
                     ContainerAction::ListConfigmaps,
                     ContainerAction::ListSecrets,
+                    ContainerAction::ListEvents,
+                    ContainerAction::ListRoutes,
+                    ContainerAction::ListNetpol,
                 ];
                 for cmd in &self.custom_commands {
                     if cmd.matches(&pod.namespace, &pod.name, None) {
@@ -1172,7 +1220,9 @@ impl App {
                         ));
                     }
                     ContainerAction::ListVolumes => {
-                        let volumes = container.volume_mounts.iter()
+                        let volumes = container
+                            .volume_mounts
+                            .iter()
                             .map(|v| v.mount_path.as_str())
                             .collect::<Vec<_>>()
                             .join(" ");
@@ -1197,8 +1247,31 @@ impl App {
                             Some(&container.name),
                         ));
                     }
+                    ContainerAction::ListEvents => {
+                        self.pending_shell = Some(self.build_list_events_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                        ));
+                    }
+                    ContainerAction::ListRoutes => {
+                        self.pending_shell = Some(self.build_list_routes_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                        ));
+                    }
+                    ContainerAction::ListNetpol => {
+                        self.pending_shell = Some(self.build_list_netpol_cmd(
+                            &pod.namespace,
+                            &pod.name,
+                            Some(&container.name),
+                        ));
+                    }
                     ContainerAction::Custom(cmd) => {
-                        let volumes = container.volume_mounts.iter()
+                        let volumes = container
+                            .volume_mounts
+                            .iter()
                             .map(|v| v.mount_path.as_str())
                             .collect::<Vec<_>>()
                             .join(" ");
@@ -1746,7 +1819,8 @@ impl App {
                         .as_ref()
                         .and_then(|c| pod.container_details.iter().find(|d| &d.name == c))
                         .map(|c| {
-                            c.volume_mounts.iter()
+                            c.volume_mounts
+                                .iter()
                                 .map(|v| v.mount_path.as_str())
                                 .collect::<Vec<_>>()
                                 .join(" ")

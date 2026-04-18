@@ -102,9 +102,12 @@ commands_builtin:
   set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}"
   port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}"
   debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}"
-  list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 3 -exec ls -l \"{}\" \; 2>/dev/null | head -100; done' | less"
+  list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"=== $m ===\"; find \"$m\" -maxdepth 1 -exec du -s {} \; 2>/dev/null; done' | less"
   list_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -o yaml -n {{NAMESPACE}} --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml"
   list_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"=== \\$s ===\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | hl"
+  list_events: "kubectl get events -n {{NAMESPACE}} --context {{CONTEXT}} --field-selector involvedObject.name={{POD}} --sort-by='.lastTimestamp' | less"
+  list_routes: "echo \"=== HTTPRoutes ===\" && kubectl get httproutes -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '.items[] | select(.spec.targetRefs[]? | .name == \"{{POD}}\") | .metadata.name' 2>/dev/null | xargs -I{} kubectl get httproute {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml 2>/dev/null || echo \"None\"; echo -e \"\\n=== Ingresses ===\" && kubectl get ingress -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml"
+  list_netpol: "kubectl get networkpolicies -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '[.items[] | select(.spec.podSelector.matchLabels)] | .[] | .metadata.name' 2>/dev/null | xargs -I{} kubectl get networkpolicy {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml"
 
 
 # Custom commands — appear in the action dialog and command palette

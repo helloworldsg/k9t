@@ -37,6 +37,9 @@ pub enum ContainerAction {
     ListVolumes,
     ListConfigmaps,
     ListSecrets,
+    ListEvents,
+    ListRoutes,
+    ListNetpol,
     Custom(CustomCommand),
 }
 
@@ -52,9 +55,12 @@ impl ContainerAction {
             ContainerAction::SetImage => "Set image".to_string(),
             ContainerAction::PortForward => "Port forward".to_string(),
             ContainerAction::Debug => "Debug".to_string(),
-            ContainerAction::ListVolumes => "List volumes".to_string(),
-            ContainerAction::ListConfigmaps => "List configmaps".to_string(),
-            ContainerAction::ListSecrets => "List secrets".to_string(),
+            ContainerAction::ListVolumes => "View volumes".to_string(),
+            ContainerAction::ListConfigmaps => "View configmaps".to_string(),
+            ContainerAction::ListSecrets => "View secrets".to_string(),
+            ContainerAction::ListEvents => "View events".to_string(),
+            ContainerAction::ListRoutes => "View routes".to_string(),
+            ContainerAction::ListNetpol => "View network policies".to_string(),
             ContainerAction::Custom(cmd) => format!(
                 ":{} {}",
                 cmd.name,

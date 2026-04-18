@@ -251,7 +251,7 @@ impl From<&Pod> for PodInfo {
             .metadata
             .creation_timestamp
             .as_ref()
-            .map(|ts| format_age(&ts.0))
+            .map(format_age)
             .unwrap_or_else(|| "Unknown".to_string());
 
         let pod_ip = pod
@@ -373,7 +373,7 @@ impl From<&Node> for NodeInfo {
             .metadata
             .creation_timestamp
             .as_ref()
-            .map(|ts| format_age(&ts.0))
+            .map(format_age)
             .unwrap_or_else(|| "Unknown".to_string());
 
         Self {
@@ -432,7 +432,7 @@ impl From<&Deployment> for DeploymentInfo {
             .metadata
             .creation_timestamp
             .as_ref()
-            .map(|ts| format_age(&ts.0))
+            .map(format_age)
             .unwrap_or_else(|| "Unknown".to_string());
 
         Self {
@@ -502,7 +502,7 @@ impl From<&Service> for ServiceInfo {
             .metadata
             .creation_timestamp
             .as_ref()
-            .map(|ts| format_age(&ts.0))
+            .map(format_age)
             .unwrap_or_else(|| "Unknown".to_string());
 
         Self {
@@ -552,8 +552,8 @@ impl From<&Event> for EventInfo {
         let time = ev
             .last_timestamp
             .as_ref()
-            .map(|ts| format_age(&ts.0))
-            .or_else(|| ev.event_time.as_ref().map(|ts| format_age(&ts.0)))
+            .map(format_age)
+            .or_else(|| ev.event_time.as_ref().map(format_micro_time_age))
             .unwrap_or_else(|| "Unknown".to_string());
 
         Self {
@@ -575,24 +575,32 @@ impl From<&Arc<Event>> for EventInfo {
 
 // Helpers
 
-fn format_age(created: &jiff::Timestamp) -> String {
+fn format_timestamp_age(ts: jiff::Timestamp) -> String {
     let now = jiff::Timestamp::now();
-    let span = match now.since(*created) {
+    let span = match now.since(ts) {
         Ok(s) => s,
         Err(_) => return "Unknown".to_string(),
     };
 
-    // Use total() to compute age in each unit regardless of how the span
-    // internally stores its fields. Falls back to 0.0 if the span is empty.
-    let total_days = span.total(jiff::Unit::Day).unwrap_or(0.0) as u64;
     let total_hours = span.total(jiff::Unit::Hour).unwrap_or(0.0) as u64;
+    let total_days = total_hours / 24;
     let total_minutes = span.total(jiff::Unit::Minute).unwrap_or(0.0) as u64;
 
-    if total_days > 0 {
-        format!("{total_days}d{}h", total_hours % 24)
-    } else if total_hours > 0 {
-        format!("{total_hours}h{}m", total_minutes % 60)
+    if total_days >= 1 {
+        format!("{}d{}h", total_days, total_hours % 24)
+    } else if total_hours >= 1 {
+        format!("{}h{}m", total_hours, total_minutes % 60)
     } else {
-        format!("{total_minutes}m")
+        format!("{}m", total_minutes)
     }
+}
+
+fn format_age(time: &k8s_openapi::apimachinery::pkg::apis::meta::v1::Time) -> String {
+    format_timestamp_age(time.0)
+}
+
+fn format_micro_time_age(
+    time: &k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime,
+) -> String {
+    format_timestamp_age(time.0)
 }
