@@ -23,11 +23,43 @@ pub enum SortConfig {
     StatusDesc,
 }
 
+impl SortConfig {
+    pub fn column(&self) -> &'static str {
+        match self {
+            SortConfig::NamespaceAsc | SortConfig::NamespaceDesc => "namespace",
+            SortConfig::NameAsc | SortConfig::NameDesc => "name",
+            SortConfig::AgeAsc | SortConfig::AgeDesc => "age",
+            SortConfig::StatusAsc | SortConfig::StatusDesc => "status",
+        }
+    }
+
+    pub fn is_descending(&self) -> bool {
+        matches!(
+            self,
+            SortConfig::NamespaceDesc
+                | SortConfig::NameDesc
+                | SortConfig::AgeDesc
+                | SortConfig::StatusDesc
+        )
+    }
+
+    pub fn toggle_for_column(column: &str) -> Self {
+        match column {
+            "namespace" => SortConfig::NamespaceAsc,
+            "name" => SortConfig::NameAsc,
+            "age" => SortConfig::AgeAsc,
+            "status" => SortConfig::StatusAsc,
+            _ => SortConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PodTableMode {
     #[default]
     Compact,
     Wide,
+    WideResources,
 }
 
 /// A flattened table row for the pod list view.
@@ -169,6 +201,8 @@ pub struct App {
     pub sort_config: SortConfig,
     /// Visible pod table column set.
     pub pod_table_mode: PodTableMode,
+    /// Column boundaries for mouse click detection (populated by render).
+    pub column_boundaries: Option<Vec<u16>>,
     /// Actions list for the container actions dialog.
     pub container_actions: Vec<ContainerAction>,
     /// Selected index in the container actions dialog.
@@ -256,6 +290,7 @@ impl App {
             port_forward_container: None,
             sort_config: SortConfig::default(),
             pod_table_mode: PodTableMode::default(),
+            column_boundaries: None,
             container_actions: Vec::new(),
             container_actions_index: 0,
             commands_builtin,
@@ -609,6 +644,9 @@ impl App {
                 let total = self.table_rows().len();
                 self.selected_index = (self.selected_index + 1).min(total.saturating_sub(1));
             }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) if mouse.row == 1 => {
+                self.handle_header_click(mouse.column);
+            }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) if mouse.row >= 2 => {
                 let clicked_row = (mouse.row - 2) as usize;
                 let total_rows = self.table_rows().len();
@@ -632,6 +670,71 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_header_click(&mut self, column: u16) {
+        let boundaries = match &self.column_boundaries {
+            Some(b) => b,
+            None => return,
+        };
+        let col = self.column_index_from_width(column, boundaries);
+        if let Some(idx) = col {
+            self.click_header(idx);
+        }
+    }
+
+    fn column_index_from_width(&self, column: u16, boundaries: &[u16]) -> Option<usize> {
+        for (i, &bound) in boundaries.iter().enumerate() {
+            if column < bound {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    pub fn click_header(&mut self, column_index: usize) {
+        let column = match (self.pod_table_mode, column_index) {
+            (PodTableMode::Compact, 0) => "namespace",
+            (PodTableMode::Compact, 1) => "name",
+            (PodTableMode::Compact, 2) => "ready",
+            (PodTableMode::Compact, 3) => "status",
+            (PodTableMode::Compact, 4) => "restarts",
+            (PodTableMode::Compact, 5) => "age",
+            (PodTableMode::Wide, 0) => "namespace",
+            (PodTableMode::Wide, 1) => "name",
+            (PodTableMode::Wide, 2) => "ready",
+            (PodTableMode::Wide, 3) => "status",
+            (PodTableMode::Wide, 4) => "restarts",
+            (PodTableMode::Wide, 5) => "ip",
+            (PodTableMode::Wide, 6) => "node",
+            (PodTableMode::Wide, 7) => "image",
+            (PodTableMode::Wide, 8) => "age",
+            (PodTableMode::WideResources, 0) => "namespace",
+            (PodTableMode::WideResources, 1) => "name",
+            (PodTableMode::WideResources, 2) => "ready",
+            (PodTableMode::WideResources, 3) => "status",
+            (PodTableMode::WideResources, 4) => "restarts",
+            (PodTableMode::WideResources, 5) => "cpu",
+            (PodTableMode::WideResources, 6) => "memory",
+            (PodTableMode::WideResources, 7) => "age",
+            _ => return,
+        };
+
+        if self.sort_config.column() == column {
+            self.sort_config = match self.sort_config {
+                SortConfig::NamespaceAsc => SortConfig::NamespaceDesc,
+                SortConfig::NamespaceDesc => SortConfig::NamespaceAsc,
+                SortConfig::NameAsc => SortConfig::NameDesc,
+                SortConfig::NameDesc => SortConfig::NameAsc,
+                SortConfig::AgeAsc => SortConfig::AgeDesc,
+                SortConfig::AgeDesc => SortConfig::AgeAsc,
+                SortConfig::StatusAsc => SortConfig::StatusDesc,
+                SortConfig::StatusDesc => SortConfig::StatusAsc,
+            };
+        } else {
+            self.sort_config = SortConfig::toggle_for_column(column);
+        }
+        self.apply_sort();
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -986,7 +1089,8 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Char('w')) => {
                 self.pod_table_mode = match self.pod_table_mode {
                     PodTableMode::Compact => PodTableMode::Wide,
-                    PodTableMode::Wide => PodTableMode::Compact,
+                    PodTableMode::Wide => PodTableMode::WideResources,
+                    PodTableMode::WideResources => PodTableMode::Compact,
                 };
             }
             // ── Sort cycle ──
@@ -2093,6 +2197,10 @@ impl App {
         self.available_contexts = contexts;
     }
 
+    pub fn set_column_boundaries(&mut self, boundaries: Vec<u16>) {
+        self.column_boundaries = Some(boundaries);
+    }
+
     /// Return contexts filtered by the context picker search query.
     pub fn filtered_contexts(&self) -> Vec<String> {
         if self.context_picker_search.is_empty() {
@@ -2137,6 +2245,8 @@ mod tests {
             age: "5m".to_string(),
             pod_ip: "10.42.0.15".to_string(),
             node_name: "worker-a".to_string(),
+            cpu: "100m - 500m".to_string(),
+            memory: "128Mi - 512Mi".to_string(),
             containers: vec!["api".to_string()],
             container_details: vec![ContainerDetail {
                 name: "api".to_string(),
@@ -2165,6 +2275,12 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert_eq!(app.pod_table_mode, PodTableMode::Wide);
+
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.pod_table_mode, PodTableMode::WideResources);
 
         app.update(AppEvent::Key(KeyEvent::new(
             KeyCode::Char('w'),

@@ -6,11 +6,24 @@ use ratatui::{
     widgets::{Cell, Row, Table, TableState},
 };
 
-use k9t_app::{PodTableMode, TableRow};
+use k9t_app::{PodTableMode, SortConfig, TableRow};
 
 use crate::theme::Theme;
 
 const MIN_WIDE_TABLE_WIDTH: u16 = 100;
+
+fn make_header_cell<'a>(text: &'a str, column: &'a str, sort_config: &'a SortConfig) -> Cell<'a> {
+    let sort_indicator = if sort_config.column() == column {
+        if sort_config.is_descending() {
+            " ▾"
+        } else {
+            " ▴"
+        }
+    } else {
+        "  "
+    };
+    Cell::from(format!("{}{}", text, sort_indicator)).style(Style::default().bold())
+}
 
 fn status_style(theme: &Theme, status: &str) -> Style {
     match status {
@@ -41,6 +54,36 @@ fn shorten_image(image: &str) -> String {
     }
 }
 
+fn make_boundaries(area: ratatui::layout::Rect, constraints: &[Constraint]) -> Vec<u16> {
+    let mut current_x = 0;
+    let mut boundaries = Vec::new();
+    let table_width = area.width;
+
+    for constraint in constraints {
+        let width = match constraint {
+            Constraint::Length(n) => *n,
+            Constraint::Min(n) => {
+                let used: u16 = constraints
+                    .iter()
+                    .map(|c| match c {
+                        Constraint::Length(l) => *l,
+                        Constraint::Min(_) => 0,
+                        Constraint::Max(_) => 0,
+                        Constraint::Percentage(_) => 0,
+                        Constraint::Ratio(_, _) => 0,
+                        Constraint::Fill(_) => 0,
+                    })
+                    .sum();
+                (table_width.saturating_sub(used)).max(*n)
+            }
+            _ => 0,
+        };
+        current_x += width;
+        boundaries.push(current_x);
+    }
+    boundaries
+}
+
 /// Container status uses a slightly different mapping:
 /// "Running" = green, "Waiting" or common wait reasons = yellow, "Terminated" = red-ish.
 fn container_status_style(theme: &Theme, status: &str, is_init: bool) -> Style {
@@ -62,8 +105,8 @@ fn container_status_style(theme: &Theme, status: &str, is_init: bool) -> Style {
 /// Compute column widths that auto-resize to fit content and terminal width.
 /// Columns: NAMESPACE, NAME, READY, STATUS, RESTARTS, AGE (for pods)
 /// Container rows show: (empty), NAME(indented), READY(✓/✗), STATUS, RESTARTS, AGE(inherited)
-fn compute_compact_column_widths(rows: &[TableRow]) -> [Constraint; 6] {
-    let header_lens: [u16; 6] = [9, 4, 5, 6, 8, 3]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, AGE
+fn compute_compact_column_widths(rows: &[TableRow]) -> Vec<Constraint> {
+    let header_lens: [u16; 6] = [11, 6, 5, 8, 8, 5]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, AGE (with sort indicator space)
 
     let data_max = if rows.is_empty() {
         header_lens
@@ -100,7 +143,7 @@ fn compute_compact_column_widths(rows: &[TableRow]) -> [Constraint; 6] {
     // 1-cell padding on each side of every column for readability
     let padded: [u16; 6] = data_max.map(|w| w.saturating_add(2));
 
-    [
+    vec![
         Constraint::Length(padded[0]), // NAMESPACE — fixed to widest content
         Constraint::Min(padded[1]),    // NAME — absorbs all remaining width
         Constraint::Length(padded[2]), // READY
@@ -110,8 +153,8 @@ fn compute_compact_column_widths(rows: &[TableRow]) -> [Constraint; 6] {
     ]
 }
 
-fn compute_wide_column_widths(rows: &[TableRow]) -> [Constraint; 9] {
-    let header_lens: [u16; 9] = [9, 4, 5, 6, 8, 2, 4, 16, 3]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, IP, NODE, IMAGE, AGE
+fn compute_wide_column_widths(rows: &[TableRow]) -> Vec<Constraint> {
+    let header_lens: [u16; 9] = [11, 6, 5, 8, 8, 4, 6, 18, 5]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, IP, NODE, IMAGE, AGE (with sort indicator space)
 
     let data_max = if rows.is_empty() {
         header_lens
@@ -150,7 +193,7 @@ fn compute_wide_column_widths(rows: &[TableRow]) -> [Constraint; 9] {
 
     let padded: [u16; 9] = data_max.map(|w| w.saturating_add(2));
 
-    [
+    vec![
         Constraint::Length(padded[0].min(20)),
         Constraint::Min(padded[1]),
         Constraint::Length(padded[2]),
@@ -163,8 +206,56 @@ fn compute_wide_column_widths(rows: &[TableRow]) -> [Constraint; 9] {
     ]
 }
 
+fn compute_wide_resources_column_widths(rows: &[TableRow]) -> Vec<Constraint> {
+    let header_lens: [u16; 8] = [11, 6, 5, 8, 8, 12, 12, 5]; // NAMESPACE, NAME, READY, STATUS, RESTARTS, CPU, MEMORY, AGE (with sort indicator space)
+
+    let data_max = if rows.is_empty() {
+        header_lens
+    } else {
+        let mut maxes = header_lens;
+        for row in rows {
+            match row {
+                TableRow::Pod { pod, .. } => {
+                    maxes[0] = maxes[0].max(pod.namespace.len() as u16);
+                    maxes[1] = maxes[1].max(pod.name.len() as u16 + 2);
+                    maxes[2] = maxes[2].max(pod.ready.len() as u16);
+                    maxes[3] = maxes[3].max(pod.status.len() as u16);
+                    maxes[4] = maxes[4].max(pod.restarts.to_string().len() as u16);
+                    maxes[5] = maxes[5].max(pod.cpu.len() as u16);
+                    maxes[6] = maxes[6].max(pod.memory.len() as u16);
+                    maxes[7] = maxes[7].max(pod.age.len() as u16);
+                }
+                TableRow::Container { container, .. } => {
+                    let indented_len = container.name.len() as u16 + 6;
+                    maxes[1] = maxes[1].max(indented_len);
+                    maxes[2] = maxes[2].max(1);
+                    maxes[3] = maxes[3].max(container.status.len() as u16);
+                    maxes[4] = maxes[4].max(container.restart_count.to_string().len() as u16);
+                }
+            }
+        }
+        maxes
+    };
+
+    let padded: [u16; 8] = data_max.map(|w| w.saturating_add(2));
+
+    vec![
+        Constraint::Length(padded[0].min(20)),
+        Constraint::Min(padded[1]),
+        Constraint::Length(padded[2]),
+        Constraint::Length(padded[3].min(18)),
+        Constraint::Length(padded[4]),
+        Constraint::Length(padded[5]),
+        Constraint::Length(padded[6]),
+        Constraint::Length(padded[7]),
+    ]
+}
+
 fn effective_table_mode(mode: PodTableMode, area_width: u16) -> PodTableMode {
     match mode {
+        PodTableMode::WideResources if area_width >= MIN_WIDE_TABLE_WIDTH => {
+            PodTableMode::WideResources
+        }
         PodTableMode::Wide if area_width >= MIN_WIDE_TABLE_WIDTH => PodTableMode::Wide,
         _ => PodTableMode::Compact,
     }
@@ -175,20 +266,41 @@ pub fn render_pod_table(
     area: ratatui::layout::Rect,
     rows: &[TableRow],
     selected_index: usize,
-    _title: &str,
     mode: PodTableMode,
+    sort_config: &SortConfig,
     theme: &Theme,
-) {
+) -> Vec<u16> {
     let mode = effective_table_mode(mode, area.width);
+
+    let constraints = match mode {
+        PodTableMode::Compact => compute_compact_column_widths(rows),
+        PodTableMode::Wide => compute_wide_column_widths(rows),
+        PodTableMode::WideResources => compute_wide_resources_column_widths(rows),
+    };
+
+    let boundaries = make_boundaries(area, &constraints);
 
     let header = match mode {
         PodTableMode::Compact => {
+            let columns = ["namespace", "name", "ready", "status", "restarts", "age"];
             let header_cells = ["NAMESPACE", "NAME", "READY", "STATUS", "RESTARTS", "AGE"]
-                .into_iter()
-                .map(|h| Cell::from(h).style(theme.title_style()));
+                .iter()
+                .zip(columns.iter())
+                .map(|(h, col)| make_header_cell(h, col, sort_config));
             Row::new(header_cells).style(theme.title_style())
         }
         PodTableMode::Wide => {
+            let columns = [
+                "namespace",
+                "name",
+                "ready",
+                "status",
+                "restarts",
+                "ip",
+                "node",
+                "image",
+                "age",
+            ];
             let header_cells = [
                 "NAMESPACE",
                 "NAME",
@@ -200,8 +312,35 @@ pub fn render_pod_table(
                 "IMAGE",
                 "AGE",
             ]
-            .into_iter()
-            .map(|h| Cell::from(h).style(theme.title_style()));
+            .iter()
+            .zip(columns.iter())
+            .map(|(h, col)| make_header_cell(h, col, sort_config));
+            Row::new(header_cells).style(theme.title_style())
+        }
+        PodTableMode::WideResources => {
+            let columns = [
+                "namespace",
+                "name",
+                "ready",
+                "status",
+                "restarts",
+                "cpu",
+                "memory",
+                "age",
+            ];
+            let header_cells = [
+                "NAMESPACE",
+                "NAME",
+                "READY",
+                "STATUS",
+                "RESTARTS",
+                "CPU",
+                "MEMORY",
+                "AGE",
+            ]
+            .iter()
+            .zip(columns.iter())
+            .map(|(h, col)| make_header_cell(h, col, sort_config));
             Row::new(header_cells).style(theme.title_style())
         }
     };
@@ -243,6 +382,16 @@ pub fn render_pod_table(
                             Cell::from(pod.pod_ip.as_str()),
                             Cell::from(pod.node_name.as_str()),
                             Cell::from(pod_image),
+                            Cell::from(pod.age.as_str()),
+                        ],
+                        PodTableMode::WideResources => vec![
+                            Cell::from(pod.namespace.as_str()),
+                            Cell::from(name_with_indicator),
+                            Cell::from(pod.ready.as_str()),
+                            status_cell,
+                            Cell::from(pod.restarts.to_string()),
+                            Cell::from(pod.cpu.as_str()),
+                            Cell::from(pod.memory.as_str()),
                             Cell::from(pod.age.as_str()),
                         ],
                     };
@@ -298,6 +447,16 @@ pub fn render_pod_table(
                             Cell::from(container_image),
                             Cell::from(""),
                         ],
+                        PodTableMode::WideResources => vec![
+                            Cell::from(""),
+                            Cell::from(name_cell),
+                            Cell::from(Span::styled(ready_str, ready_style)),
+                            status_cell,
+                            Cell::from(container.restart_count.to_string()),
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(""),
+                        ],
                     };
 
                     Row::new(cells).style(if is_selected {
@@ -313,6 +472,9 @@ pub fn render_pod_table(
     let table = match mode {
         PodTableMode::Compact => Table::new(table_rows, compute_compact_column_widths(rows)),
         PodTableMode::Wide => Table::new(table_rows, compute_wide_column_widths(rows)),
+        PodTableMode::WideResources => {
+            Table::new(table_rows, compute_wide_resources_column_widths(rows))
+        }
     }
     .header(header)
     .row_highlight_style(theme.selected_style());
@@ -324,4 +486,6 @@ pub fn render_pod_table(
 
     let padded_table = table.style(theme.bg_surface());
     frame.render_stateful_widget(padded_table, area, &mut state);
+
+    boundaries
 }

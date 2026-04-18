@@ -91,6 +91,8 @@ pub struct PodInfo {
     pub age: String,
     pub pod_ip: String,
     pub node_name: String,
+    pub cpu: String,
+    pub memory: String,
     /// Container names from the pod spec (for exec/shell into specific containers).
     pub containers: Vec<String>,
     /// Per-container status details (for expanded container view).
@@ -266,6 +268,8 @@ impl From<&Pod> for PodInfo {
             .and_then(|spec| spec.node_name.clone())
             .unwrap_or_else(|| "-".to_string());
 
+        let resources = extract_pod_resources(pod);
+
         Self {
             namespace,
             name,
@@ -275,10 +279,85 @@ impl From<&Pod> for PodInfo {
             age,
             pod_ip,
             node_name,
+            cpu: resources.cpu,
+            memory: resources.memory,
             containers,
             container_details,
         }
     }
+}
+
+fn extract_pod_resources(pod: &Pod) -> PodResources {
+    let mut cpu_requests: Vec<String> = Vec::new();
+    let mut memory_requests: Vec<String> = Vec::new();
+    let mut cpu_limits: Vec<String> = Vec::new();
+    let mut memory_limits: Vec<String> = Vec::new();
+
+    if let Some(spec) = pod.spec.as_ref() {
+        for container in &spec.containers {
+            if let Some(resources) = container.resources.as_ref() {
+                if let Some(cpu) = resources.requests.as_ref().and_then(|r| r.get("cpu")) {
+                    cpu_requests.push(cpu.0.clone());
+                }
+                if let Some(mem) = resources.requests.as_ref().and_then(|r| r.get("memory")) {
+                    memory_requests.push(mem.0.clone());
+                }
+                if let Some(cpu) = resources.limits.as_ref().and_then(|l| l.get("cpu")) {
+                    cpu_limits.push(cpu.0.clone());
+                }
+                if let Some(mem) = resources.limits.as_ref().and_then(|l| l.get("memory")) {
+                    memory_limits.push(mem.0.clone());
+                }
+            }
+        }
+    }
+
+    let format_cpu = |req: Option<String>, limit: Option<String>| -> String {
+        let req_str = req.unwrap_or_else(|| "∅".to_string());
+        let limit_str = limit.unwrap_or_else(|| "∞".to_string());
+        format!("{} - {}", req_str, limit_str)
+    };
+
+    let format_memory = |req: Option<String>, limit: Option<String>| -> String {
+        let req_str = req.unwrap_or_else(|| "∅".to_string());
+        let limit_str = limit.unwrap_or_else(|| "∞".to_string());
+        format!("{} - {}", req_str, limit_str)
+    };
+
+    let combine =
+        |requests: Vec<String>, limits: Vec<String>| -> (Option<String>, Option<String>) {
+            if requests.is_empty() && limits.is_empty() {
+                return (None, None);
+            }
+            let same_request = if requests.is_empty() {
+                None
+            } else if requests.iter().all(|v| v == &requests[0]) {
+                Some(requests[0].clone())
+            } else {
+                Some("mixed".to_string())
+            };
+            let same_limit = if limits.is_empty() {
+                None
+            } else if limits.iter().all(|v| v == &limits[0]) {
+                Some(limits[0].clone())
+            } else {
+                Some("mixed".to_string())
+            };
+            (same_request, same_limit)
+        };
+
+    let (cpu_req, cpu_lim) = combine(cpu_requests.clone(), cpu_limits.clone());
+    let (mem_req, mem_lim) = combine(memory_requests.clone(), memory_limits.clone());
+
+    PodResources {
+        cpu: format_cpu(cpu_req, cpu_lim),
+        memory: format_memory(mem_req, mem_lim),
+    }
+}
+
+struct PodResources {
+    cpu: String,
+    memory: String,
 }
 
 fn derive_pod_status(pod: &Pod) -> String {

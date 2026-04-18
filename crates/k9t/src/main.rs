@@ -436,16 +436,16 @@ async fn main() -> Result<()> {
             // Skip resource table when a fullscreen overlay is active
             if !is_fullscreen_overlay(&app.mode) {
                 let rows = app.table_rows();
-                let title = app.table_title();
-                resource_table::render_pod_table(
+                let boundaries = resource_table::render_pod_table(
                     frame,
                     layout.table,
                     &rows,
                     app.selected_index,
-                    &title,
                     app.pod_table_mode,
+                    &app.sort_config,
                     &theme,
                 );
+                app.set_column_boundaries(boundaries);
             }
 
             // Context-sensitive footer / bottom bars
