@@ -7,7 +7,7 @@ use k9t_core::{ContainerDetail, PodInfo};
 use crate::command::{Command, CommandItem};
 use crate::config::{CommandTemplate, Commands, CustomCommand};
 use crate::event::AppEvent;
-use crate::mode::{ConfirmContext, ContainerAction, ContainerPickerIntent, Mode};
+use crate::mode::{ConfirmContext, ConfirmFocus, ContainerAction, ContainerPickerIntent, Mode};
 
 /// Sort configuration for the pod list.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -207,6 +207,8 @@ pub struct App {
     pub container_actions: Vec<ContainerAction>,
     /// Selected index in the container actions dialog.
     pub container_actions_index: usize,
+    /// Focused button in the confirm dialog (Yes/No).
+    pub confirm_focus: ConfirmFocus,
     /// Built-in command templates (logs, shell, describe, etc.) from config.
     pub commands_builtin: Commands,
 }
@@ -293,6 +295,7 @@ impl App {
             column_boundaries: None,
             container_actions: Vec::new(),
             container_actions_index: 0,
+            confirm_focus: ConfirmFocus::default(),
             commands_builtin,
         }
     }
@@ -1127,7 +1130,6 @@ impl App {
             if let Some(pod) = self.pods.get(pod_index) {
                 let mut actions = vec![
                     ContainerAction::Logs,
-                    ContainerAction::PreviousLogs,
                     ContainerAction::Shell,
                     ContainerAction::Describe,
                     ContainerAction::Yaml,
@@ -1141,6 +1143,9 @@ impl App {
                     ContainerAction::ListRoutes,
                     ContainerAction::ListNetpol,
                 ];
+                if pod.restarts >= 1 {
+                    actions.insert(1, ContainerAction::PreviousLogs);
+                }
                 for cmd in &self.custom_commands {
                     if cmd.matches(&pod.namespace, &pod.name, None) {
                         actions.push(ContainerAction::Custom(cmd.clone()));
@@ -1185,14 +1190,23 @@ impl App {
             }
             (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
                 let filtered = self.filtered_container_actions(&query);
-                let new_index = (index + 1).min(filtered.len().saturating_sub(1));
+                let new_index = if index >= filtered.len().saturating_sub(1) {
+                    0
+                } else {
+                    index + 1
+                };
                 self.mode = Mode::ContainerActions {
                     query,
                     index: new_index,
                 };
             }
             (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
-                let new_index = index.saturating_sub(1);
+                let filtered = self.filtered_container_actions(&query);
+                let new_index = if index == 0 {
+                    filtered.len().saturating_sub(1)
+                } else {
+                    index - 1
+                };
                 self.mode = Mode::ContainerActions {
                     query,
                     index: new_index,
@@ -1493,6 +1507,33 @@ impl App {
             (KeyModifiers::NONE, KeyCode::Esc) => {
                 self.mode = Mode::Normal;
             }
+            (KeyModifiers::NONE, KeyCode::Left) => {
+                self.confirm_focus = ConfirmFocus::Yes;
+            }
+            (KeyModifiers::NONE, KeyCode::Right) => {
+                self.confirm_focus = ConfirmFocus::No;
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                if self.confirm_focus == ConfirmFocus::Yes {
+                    if let Mode::ConfirmAction(ref ctx) = self.mode {
+                        match ctx {
+                            ConfirmContext::KillPod { namespace, name } => {
+                                self.pending_async_action = Some(AsyncAction::KillPod {
+                                    namespace: namespace.clone(),
+                                    name: name.clone(),
+                                });
+                            }
+                            ConfirmContext::RestartDeployment { namespace, name } => {
+                                self.pending_async_action = Some(AsyncAction::RestartDeployment {
+                                    namespace: namespace.clone(),
+                                    name: name.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                self.mode = Mode::Normal;
+            }
             (KeyModifiers::NONE, KeyCode::Char('y')) | (KeyModifiers::NONE, KeyCode::Char('Y')) => {
                 if let Mode::ConfirmAction(ref ctx) = self.mode {
                     match ctx {
@@ -1512,10 +1553,10 @@ impl App {
                 }
                 self.mode = Mode::Normal;
             }
-            // Any other key cancels
-            _ => {
+            (KeyModifiers::NONE, KeyCode::Char('n')) | (KeyModifiers::NONE, KeyCode::Char('N')) => {
                 self.mode = Mode::Normal;
             }
+            _ => {}
         }
     }
 

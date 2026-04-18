@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
+    style::Stylize,
     text::{Line, Span},
     widgets::{Block, BorderType, Clear, Paragraph},
 };
@@ -88,7 +89,9 @@ pub fn render_container_actions(
     } else {
         theme.fg_default()
     };
-    let search = Paragraph::new(search_text).style(search_style);
+    let search = Paragraph::new(search_text)
+        .style(search_style)
+        .bg(theme.bg_overlay().bg.unwrap_or_default());
     frame.render_widget(search, search_area);
 
     // Action list

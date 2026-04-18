@@ -8,6 +8,8 @@ use ratatui::{
 
 use crate::theme::Theme;
 
+use k9t_app::ConfirmFocus;
+
 /// Render a centered confirmation dialog for destructive actions.
 /// Keyboard hints are shown in the footer.
 pub fn render_confirm_dialog(
@@ -17,9 +19,10 @@ pub fn render_confirm_dialog(
     message: &str,
     resource: &str,
     theme: &Theme,
+    focus: ConfirmFocus,
 ) {
     let popup_width = 52.min(area.width);
-    let popup_height = 4.min(area.height); // Reduced since no hint area
+    let popup_height = 5.min(area.height);
     let popup_x = area.width.saturating_sub(popup_width) / 2;
     let popup_y = area.height.saturating_sub(popup_height) / 2;
 
@@ -41,6 +44,9 @@ pub fn render_confirm_dialog(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
+    let [msg_area, button_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(inner);
+
     let warning_style = theme.status_warning().add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(
@@ -50,7 +56,27 @@ pub fn render_confirm_dialog(
         Line::from(""),
     ];
     let msg_para = Paragraph::new(lines).style(theme.bg_overlay());
-    frame.render_widget(msg_para, inner);
+    frame.render_widget(msg_para, msg_area);
+
+    let yes_style = if focus == ConfirmFocus::Yes {
+        theme.accent_primary().add_modifier(Modifier::REVERSED)
+    } else {
+        theme.fg_default()
+    };
+    let no_style = if focus == ConfirmFocus::No {
+        theme.accent_primary().add_modifier(Modifier::REVERSED)
+    } else {
+        theme.fg_default()
+    };
+
+    let button_text = Line::from(vec![
+        Span::styled(" [Yes] ", yes_style),
+        Span::styled(" [No] ", no_style),
+    ]);
+    let button_para = Paragraph::new(button_text)
+        .alignment(Alignment::Center)
+        .style(theme.bg_overlay());
+    frame.render_widget(button_para, button_area);
 }
 
 /// Render a centered input dialog for text input (e.g. set image, port forward).

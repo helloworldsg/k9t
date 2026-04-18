@@ -42,7 +42,7 @@ pub fn render_command_palette(
             Span::styled(query.to_string(), theme.fg_default()),
             Span::styled(cursor, theme.accent_primary()),
         ]);
-        frame.render_widget(Paragraph::new(prompt).style(theme.bg_surface()), area);
+        frame.render_widget(Paragraph::new(prompt).style(theme.bg_overlay()), area);
         return;
     }
 

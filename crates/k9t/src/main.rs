@@ -491,7 +491,10 @@ async fn main() -> Result<()> {
                     // Show contextual hints based on mode
                     // Universal hints (q, /, ?) only make sense in Normal mode
                     let (context_hints, show_universal): (&[(&str, &str)], bool) = match &app.mode {
-                        Mode::ConfirmAction(_) => (&[("y", "confirm"), ("Esc", "cancel")], false),
+                        Mode::ConfirmAction(_) => (
+                            &[("←/→", "focus"), ("Enter", "confirm"), ("Esc", "cancel")],
+                            false,
+                        ),
                         Mode::ContainerPicker(_) => {
                             (&[("Enter", "sel"), ("↑/↓", "nav"), ("Esc", "back")], false)
                         }
@@ -570,6 +573,7 @@ async fn main() -> Result<()> {
                         message,
                         resource,
                         &theme,
+                        app.confirm_focus,
                     );
                 }
                 Mode::NamespacePicker => {

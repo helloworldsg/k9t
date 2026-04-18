@@ -11,4 +11,4 @@ pub use app::{
 pub use command::{Command, CommandItem};
 pub use config::{Commands, Config, CustomCommand};
 pub use event::AppEvent;
-pub use mode::{ConfirmContext, ContainerPickerIntent, Mode};
+pub use mode::{ConfirmContext, ConfirmFocus, ContainerPickerIntent, Mode};

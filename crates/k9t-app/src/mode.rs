@@ -78,3 +78,11 @@ pub enum ConfirmContext {
     KillPod { namespace: String, name: String },
     RestartDeployment { namespace: String, name: String },
 }
+
+/// Which button is focused in the confirm dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ConfirmFocus {
+    #[default]
+    Yes,
+    No,
+}

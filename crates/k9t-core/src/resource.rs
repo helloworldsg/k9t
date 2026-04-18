@@ -4,7 +4,7 @@ use k8s_openapi::api::{
     apps::v1::Deployment,
     core::v1::{Event, Node, Pod, Service},
 };
-use kube::ResourceExt;
+use kube::{Resource, ResourceExt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResourceType {
@@ -361,6 +361,10 @@ struct PodResources {
 }
 
 fn derive_pod_status(pod: &Pod) -> String {
+    if pod.meta().deletion_timestamp.is_some() {
+        return "Terminating".to_string();
+    }
+
     let phase = pod
         .status
         .as_ref()
