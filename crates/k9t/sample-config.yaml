@@ -1,0 +1,30 @@
+# k9t configuration (~/.config/k9t.yaml)
+# Customize theme, filters, custom commands, and built-in command templates
+
+# Theme: tokyo_night, nord, gruvbox_dark, monokai, one_dark, solarized_dark
+theme: tokyo_night
+
+# Default namespace (empty = all namespaces)
+namespace: ""
+
+# Show wide columns with resource info
+wide_pod_columns: false
+
+# Borderless table style
+borderless: true
+
+# Namespace/pod regex filters (matched as "namespace/pod_regex")
+# filters:
+#   - "prod/api-.*"
+#   - "staging/.*"
+
+# Custom commands (matched by regex pattern)
+# commands:
+#   - name: port-forward
+#     match_pattern: "prod/.*"
+#     command: "kubectl port-forward -n {{NAMESPACE}} {{POD}} 8080:8080"
+#     description: "Port forward to local 8080"
+
+# Built-in command templates overrides
+# commands_builtin:
+#   logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl"

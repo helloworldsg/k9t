@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -241,6 +242,21 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Load config from the first found config file, also returning the path and modification time.
+    pub fn load_with_meta() -> Result<(Self, PathBuf, SystemTime)> {
+        for path in Self::config_candidates() {
+            if !path.exists() {
+                continue;
+            }
+            let modified = std::fs::metadata(&path)?.modified()?;
+            let content = std::fs::read_to_string(&path)?;
+            let config: Config = serde_yaml::from_str(&content)?;
+            return Ok((config, path, modified));
+        }
+
+        Ok((Config::default(), PathBuf::new(), SystemTime::UNIX_EPOCH))
+    }
+
     /// Load config, searching multiple locations in priority order:
     ///
     /// 1. `~/.config/k9t.yaml` (XDG-style, same location as k9s)
@@ -250,16 +266,28 @@ impl Config {
     ///
     /// If none found, returns defaults.
     pub fn load() -> Result<Self> {
-        for path in Self::config_candidates() {
-            if !path.exists() {
-                continue;
-            }
-            let content = std::fs::read_to_string(&path)?;
-            let config: Config = serde_yaml::from_str(&content)?;
-            return Ok(config);
-        }
+        Ok(Self::load_with_meta()?.0)
+    }
 
-        Ok(Config::default())
+    /// Check if the config file at the given path has been modified since the given timestamp.
+    /// If the file doesn't exist or can't be read, returns false.
+    pub fn is_modified(path: &PathBuf, last_modified: SystemTime) -> bool {
+        if !path.exists() {
+            return false;
+        }
+        match std::fs::metadata(path).and_then(|m| m.modified()) {
+            Ok(current) => current > last_modified,
+            Err(_) => false,
+        }
+    }
+
+    /// Reload config from the same file path, returning the new config if modified.
+    /// Returns None if the file hasn't changed or doesn't exist.
+    pub fn reload_if_changed(path: &PathBuf, last_modified: SystemTime) -> Option<Self> {
+        if !path.exists() || !Self::is_modified(path, last_modified) {
+            return None;
+        }
+        Self::load().ok()
     }
 
     /// Save config as YAML to `~/.config/k9t.yaml` (creating the directory if needed).
@@ -283,7 +311,7 @@ impl Config {
         ]
     }
 
-    fn xdg_config_yaml() -> PathBuf {
+    pub fn xdg_config_yaml() -> PathBuf {
         Self::home_dir().join(".config").join("k9t.yaml")
     }
 

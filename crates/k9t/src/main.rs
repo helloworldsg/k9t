@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use clap::Parser;
@@ -19,6 +19,25 @@ use k9t_ui::widgets::{
     command_palette, confirm_dialog, container_actions, container_picker, context_picker, footer,
     header, namespace_picker, resource_table, toast,
 };
+
+fn reload_config(
+    app: &mut App,
+    config_path: &std::path::PathBuf,
+    config_modified: &mut std::time::SystemTime,
+) {
+    if let Some(new_config) = Config::reload_if_changed(config_path, *config_modified) {
+        app.custom_commands = new_config.commands;
+        app.commands_builtin = new_config.commands_builtin;
+        if let Ok(meta) = std::fs::metadata(config_path) {
+            if let Ok(m) = meta.modified() {
+                *config_modified = m;
+            }
+        }
+        app.show_toast("Config reloaded", k9t_app::ToastType::Info, 3);
+    } else {
+        app.show_toast("Config unchanged", k9t_app::ToastType::Info, 2);
+    }
+}
 
 /// Fullscreen overlay modes that replace the entire view.
 fn is_fullscreen_overlay(mode: &Mode) -> bool {
@@ -48,6 +67,12 @@ struct Cli {
     kubeconfig: Option<String>,
     #[arg(long = "regex-namespace-pods", value_name = "NAMESPACE/POD_PATTERN")]
     regex_namespace_pods: Vec<String>,
+    #[arg(
+        long,
+        help = "Create config file (or edit with $EDITOR ~/.config/k9t.yaml)",
+        global = true
+    )]
+    setup: bool,
 }
 
 /// Print the command being run so the user can see it and copy-paste it if needed.
@@ -196,10 +221,33 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let config = Config::load().unwrap_or_else(|e| {
+    // Setup: create/edit config
+    if cli.setup {
+        let config_path = Config::xdg_config_yaml();
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if !config_path.exists() {
+            let sample = include_str!("../sample-config.yaml");
+            std::fs::write(&config_path, sample)?;
+            eprintln!("Created config: {}", config_path.display());
+            eprintln!("Edit it with: $EDITOR ~/.config/k9t.yaml");
+        } else {
+            eprintln!("Config already exists: {}", config_path.display());
+            eprintln!("Edit it with: $EDITOR ~/.config/k9t.yaml");
+        }
+        return Ok(());
+    }
+
+    let (config, config_path, config_modified) = Config::load_with_meta().unwrap_or_else(|e| {
         eprintln!("Warning: failed to load config: {e}");
-        Config::default()
+        (
+            Config::default(),
+            std::path::PathBuf::new(),
+            SystemTime::UNIX_EPOCH,
+        )
     });
+    let mut config_modified = config_modified;
 
     let client = create_client(cli.context.as_deref()).await.map_err(|e| {
         let msg = format!("{e}");
@@ -273,6 +321,13 @@ async fn main() -> Result<()> {
                                 && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                             {
                                 break;
+                            }
+                            // Ctrl+R: force config reload
+                            if key.code == crossterm::event::KeyCode::Char('r')
+                                && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                reload_config(&mut app, &config_path, &mut config_modified);
+                                continue;
                             }
                             if app.update(AppEvent::Key(key)) {
                                 break;
@@ -863,6 +918,10 @@ async fn main() -> Result<()> {
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   Shift+T       ", emphasis),
                             ratatui::text::Span::styled("Cycle theme", dim),
+                        ]),
+                        ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled("   Ctrl+R        ", emphasis),
+                            ratatui::text::Span::styled("Reload config", dim),
                         ]),
                         ratatui::text::Line::from(vec![
                             ratatui::text::Span::styled("   ?             ", emphasis),
