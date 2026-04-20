@@ -207,11 +207,11 @@ pub struct App {
     pub container_actions: Vec<ContainerAction>,
     /// Selected index in the container actions dialog.
     pub container_actions_index: usize,
-/// Focused button in the confirm dialog (Yes/No).
+    /// Focused button in the confirm dialog (Yes/No).
     pub confirm_focus: ConfirmFocus,
 }
 
-    /// A kubectl subcommand to run outside the TUI (suspend/resume pattern).
+/// A kubectl subcommand to run outside the TUI (suspend/resume pattern).
 /// A shell command to run when the TUI is suspended.
 /// Paged commands (logs, yaml, describe) include the pager in the command string itself
 /// (e.g. `bash -c "kubectl ... | hl"`), so they're visible and overridable in config.
@@ -329,9 +329,15 @@ impl App {
         previous: bool,
     ) -> ShellCommand {
         let template = if previous {
-            self.commands.get("previous_logs").map(|c| c.command.as_str()).unwrap_or_default()
+            self.commands
+                .get("previous_logs")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default()
         } else {
-            self.commands.get("logs").map(|c| c.command.as_str()).unwrap_or_default()
+            self.commands
+                .get("logs")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default()
         };
         self.render_builtin(template, namespace, pod_name, container, &[])
     }
@@ -343,7 +349,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("shell").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("shell")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -353,7 +362,10 @@ impl App {
 
     pub fn build_describe_cmd(&self, namespace: &str, pod_name: &str) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("describe").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("describe")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             None,
@@ -362,7 +374,11 @@ impl App {
     }
 
     pub fn build_yaml_cmd(&self, namespace: &str, pod_name: &str) -> ShellCommand {
-        let template = self.commands.get("yaml").map(|c| c.command.as_str()).unwrap_or_default();
+        let template = self
+            .commands
+            .get("yaml")
+            .map(|c| c.command.as_str())
+            .unwrap_or_default();
         self.render_builtin(template, namespace, pod_name, None, &[])
     }
 
@@ -374,7 +390,10 @@ impl App {
         image: &str,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("set_image").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("set_image")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             Some(container),
@@ -390,7 +409,10 @@ impl App {
         ports: &str,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("port_forward").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("port_forward")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -405,7 +427,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("debug").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("debug")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -421,7 +446,10 @@ impl App {
         volumes: &str,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("view_volumes").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("view_volumes")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -436,7 +464,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("view_configmaps").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("view_configmaps")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -451,7 +482,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("view_secrets").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("view_secrets")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -466,7 +500,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("view_events").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("view_events")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -481,7 +518,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("view_routes").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("view_routes")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -496,7 +536,10 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            self.commands.get("view_netpol").map(|c| c.command.as_str()).unwrap_or_default(),
+            self.commands
+                .get("view_netpol")
+                .map(|c| c.command.as_str())
+                .unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -1144,9 +1187,26 @@ impl App {
                     actions.insert(1, ContainerAction::PreviousLogs);
                 }
                 // Add custom commands that are not built-ins
-                let builtins = ["logs", "previous_logs", "shell", "describe", "yaml", "set_image", "port_forward", "debug", "view_volumes", "view_configmaps", "view_secrets", "view_events", "view_routes", "view_netpol"];
+                let builtins = [
+                    "logs",
+                    "previous_logs",
+                    "shell",
+                    "describe",
+                    "yaml",
+                    "set_image",
+                    "port_forward",
+                    "debug",
+                    "view_volumes",
+                    "view_configmaps",
+                    "view_secrets",
+                    "view_events",
+                    "view_routes",
+                    "view_netpol",
+                ];
                 for (name, cmd) in &self.commands {
-                    if !builtins.contains(&name.as_str()) && cmd.matches(&pod.namespace, &pod.name, None) {
+                    if !builtins.contains(&name.as_str())
+                        && cmd.matches(&pod.namespace, &pod.name, None)
+                    {
                         actions.push(ContainerAction::Custom {
                             name: name.clone(),
                             cmd: cmd.clone(),

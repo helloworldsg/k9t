@@ -193,20 +193,118 @@ impl Commands {
     /// Convert built-in commands to a HashMap for uniform access.
     pub fn to_map(&self) -> HashMap<String, CustomCommand> {
         let mut map = HashMap::new();
-        map.insert("logs".to_string(), CustomCommand { match_pattern: None, command: self.logs.clone(), description: Some("Tail logs".to_string()) });
-        map.insert("previous_logs".to_string(), CustomCommand { match_pattern: None, command: self.previous_logs.clone(), description: Some("Previous logs".to_string()) });
-        map.insert("shell".to_string(), CustomCommand { match_pattern: None, command: self.shell.clone(), description: Some("Shell".to_string()) });
-        map.insert("describe".to_string(), CustomCommand { match_pattern: None, command: self.describe.clone(), description: Some("Describe".to_string()) });
-        map.insert("yaml".to_string(), CustomCommand { match_pattern: None, command: self.yaml.clone(), description: Some("View YAML".to_string()) });
-        map.insert("set_image".to_string(), CustomCommand { match_pattern: None, command: self.set_image.clone(), description: Some("Set image".to_string()) });
-        map.insert("port_forward".to_string(), CustomCommand { match_pattern: None, command: self.port_forward.clone(), description: Some("Port forward".to_string()) });
-        map.insert("debug".to_string(), CustomCommand { match_pattern: None, command: self.debug.clone(), description: Some("Debug".to_string()) });
-        map.insert("view_volumes".to_string(), CustomCommand { match_pattern: None, command: self.view_volumes.clone(), description: Some("View volumes".to_string()) });
-        map.insert("view_configmaps".to_string(), CustomCommand { match_pattern: None, command: self.view_configmaps.clone(), description: Some("View configmaps".to_string()) });
-        map.insert("view_secrets".to_string(), CustomCommand { match_pattern: None, command: self.view_secrets.clone(), description: Some("View secrets".to_string()) });
-        map.insert("view_events".to_string(), CustomCommand { match_pattern: None, command: self.view_events.clone(), description: Some("View events".to_string()) });
-        map.insert("view_routes".to_string(), CustomCommand { match_pattern: None, command: self.view_routes.clone(), description: Some("View routes".to_string()) });
-        map.insert("view_netpol".to_string(), CustomCommand { match_pattern: None, command: self.view_netpol.clone(), description: Some("View network policies".to_string()) });
+        map.insert(
+            "logs".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.logs.clone(),
+                description: Some("Tail logs".to_string()),
+            },
+        );
+        map.insert(
+            "previous_logs".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.previous_logs.clone(),
+                description: Some("Previous logs".to_string()),
+            },
+        );
+        map.insert(
+            "shell".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.shell.clone(),
+                description: Some("Shell".to_string()),
+            },
+        );
+        map.insert(
+            "describe".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.describe.clone(),
+                description: Some("Describe".to_string()),
+            },
+        );
+        map.insert(
+            "yaml".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.yaml.clone(),
+                description: Some("View YAML".to_string()),
+            },
+        );
+        map.insert(
+            "set_image".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.set_image.clone(),
+                description: Some("Set image".to_string()),
+            },
+        );
+        map.insert(
+            "port_forward".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.port_forward.clone(),
+                description: Some("Port forward".to_string()),
+            },
+        );
+        map.insert(
+            "debug".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.debug.clone(),
+                description: Some("Debug".to_string()),
+            },
+        );
+        map.insert(
+            "view_volumes".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.view_volumes.clone(),
+                description: Some("View volumes".to_string()),
+            },
+        );
+        map.insert(
+            "view_configmaps".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.view_configmaps.clone(),
+                description: Some("View configmaps".to_string()),
+            },
+        );
+        map.insert(
+            "view_secrets".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.view_secrets.clone(),
+                description: Some("View secrets".to_string()),
+            },
+        );
+        map.insert(
+            "view_events".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.view_events.clone(),
+                description: Some("View events".to_string()),
+            },
+        );
+        map.insert(
+            "view_routes".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.view_routes.clone(),
+                description: Some("View routes".to_string()),
+            },
+        );
+        map.insert(
+            "view_netpol".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: self.view_netpol.clone(),
+                description: Some("View network policies".to_string()),
+            },
+        );
         map
     }
 }
@@ -524,10 +622,7 @@ commands:
         assert_eq!(config.commands.len(), 1);
         assert!(config.commands.contains_key("port-forward-api"));
         let cmd = config.commands.get("port-forward-api").unwrap();
-        assert_eq!(
-            cmd.match_pattern.as_deref(),
-            Some("plt/api-.*")
-        );
+        assert_eq!(cmd.match_pattern.as_deref(), Some("plt/api-.*"));
     }
 
     #[test]

@@ -67,7 +67,9 @@ impl ContainerAction {
             ContainerAction::ListEvents => "View events".to_string(),
             ContainerAction::ListRoutes => "View routes".to_string(),
             ContainerAction::ListNetpol => "View network policies".to_string(),
-            ContainerAction::Custom { name: _, cmd } => cmd.description.clone()
+            ContainerAction::Custom { name: _, cmd } => cmd
+                .description
+                .clone()
                 .unwrap_or_else(|| cmd.command.clone()),
         }
     }

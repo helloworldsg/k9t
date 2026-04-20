@@ -946,10 +946,7 @@ async fn main() -> Result<()> {
                                 desc.to_string()
                             };
                             right_lines.push(ratatui::text::Line::from(vec![
-                                ratatui::text::Span::styled(
-                                    format!("   :{:<10}", name),
-                                    cmd_style,
-                                ),
+                                ratatui::text::Span::styled(format!("   :{:<10}", name), cmd_style),
                                 ratatui::text::Span::styled(desc_display, dim),
                             ]));
                         }
