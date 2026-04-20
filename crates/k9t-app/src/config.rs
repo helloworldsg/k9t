@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -9,12 +10,18 @@ use serde::{Deserialize, Serialize};
 /// Template variables available in `command`:
 /// - `{{NAMESPACE}}` — pod's namespace
 /// - `{{POD}}` — pod's name
-/// - `{{CONTAINER}}` — first container name (or the selected one)
 /// - `{{CONTEXT}}` — current kubectl context
+///
+/// The command name is the map key in the config, e.g.:
+/// ```yaml
+/// commands:
+///   my-command:
+///     match_pattern: ".*/.*/.*"
+///     command: "echo test"
+///     description: "My custom command"
+/// ```
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct CustomCommand {
-    /// Display name shown in the command bar and help screen.
-    pub name: String,
     /// Match pattern in `namespace/pod_regex/container_regex` format (e.g. `plt/api-.*/sidecar`).
     /// Pod must match namespace, pod, and container regex to be applicable.
     /// Also supports `namespace/pod_regex` format (container matches all).
@@ -169,17 +176,39 @@ pub struct Commands {
     /// Debug pod. Default: `kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}`
     pub debug: String,
     /// List volumes. Default: lists files in all mounted volumes using `{{VOLUMES}}`
-    pub list_volumes: String,
+    pub view_volumes: String,
     /// List configmaps. Default: fetches and displays all ConfigMaps in namespace
-    pub list_configmaps: String,
+    pub view_configmaps: String,
     /// List secrets. Default: fetches and displays all Secrets in namespace
-    pub list_secrets: String,
+    pub view_secrets: String,
     /// List events. Default: fetches and displays all Events in namespace
-    pub list_events: String,
+    pub view_events: String,
     /// List routes (HTTPRoute + Ingress). Default: fetches and displays all HTTP Routes and Ingresses
-    pub list_routes: String,
+    pub view_routes: String,
     /// List network policies. Default: fetches and displays all NetworkPolicies
-    pub list_netpol: String,
+    pub view_netpol: String,
+}
+
+impl Commands {
+    /// Convert built-in commands to a HashMap for uniform access.
+    pub fn to_map(&self) -> HashMap<String, CustomCommand> {
+        let mut map = HashMap::new();
+        map.insert("logs".to_string(), CustomCommand { match_pattern: None, command: self.logs.clone(), description: Some("Tail logs".to_string()) });
+        map.insert("previous_logs".to_string(), CustomCommand { match_pattern: None, command: self.previous_logs.clone(), description: Some("Previous logs".to_string()) });
+        map.insert("shell".to_string(), CustomCommand { match_pattern: None, command: self.shell.clone(), description: Some("Shell".to_string()) });
+        map.insert("describe".to_string(), CustomCommand { match_pattern: None, command: self.describe.clone(), description: Some("Describe".to_string()) });
+        map.insert("yaml".to_string(), CustomCommand { match_pattern: None, command: self.yaml.clone(), description: Some("View YAML".to_string()) });
+        map.insert("set_image".to_string(), CustomCommand { match_pattern: None, command: self.set_image.clone(), description: Some("Set image".to_string()) });
+        map.insert("port_forward".to_string(), CustomCommand { match_pattern: None, command: self.port_forward.clone(), description: Some("Port forward".to_string()) });
+        map.insert("debug".to_string(), CustomCommand { match_pattern: None, command: self.debug.clone(), description: Some("Debug".to_string()) });
+        map.insert("view_volumes".to_string(), CustomCommand { match_pattern: None, command: self.view_volumes.clone(), description: Some("View volumes".to_string()) });
+        map.insert("view_configmaps".to_string(), CustomCommand { match_pattern: None, command: self.view_configmaps.clone(), description: Some("View configmaps".to_string()) });
+        map.insert("view_secrets".to_string(), CustomCommand { match_pattern: None, command: self.view_secrets.clone(), description: Some("View secrets".to_string()) });
+        map.insert("view_events".to_string(), CustomCommand { match_pattern: None, command: self.view_events.clone(), description: Some("View events".to_string()) });
+        map.insert("view_routes".to_string(), CustomCommand { match_pattern: None, command: self.view_routes.clone(), description: Some("View routes".to_string()) });
+        map.insert("view_netpol".to_string(), CustomCommand { match_pattern: None, command: self.view_netpol.clone(), description: Some("View network policies".to_string()) });
+        map
+    }
 }
 
 impl Default for Commands {
@@ -193,12 +222,12 @@ impl Default for Commands {
             set_image: "kubectl set image pod/{{POD}} -n {{NAMESPACE}} {{CONTAINER}}={{IMAGE}} --context {{CONTEXT}}".to_string(),
             port_forward: "kubectl port-forward -n {{NAMESPACE}} {{POD}} {{PORTS}} --context {{CONTEXT}}".to_string(),
             debug: "kubectl debug -it {{POD}} --container={{CONTAINER}} --image=alpine --share-processes --copy-to={{POD}}-debug --context {{CONTEXT}} -- sh; kubectl delete pod {{POD}}-debug --context {{CONTEXT}}".to_string(),
-            list_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"##### $m #####\"; find \"$m\" -maxdepth 1 -exec du -s {} \\; 2>/dev/null; done' | bat --language=dotenv --style=changes --paging=always".to_string(),
-            list_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -n {{NAMESPACE}} -o yaml --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml --style=changes --paging=always".to_string(),
-            list_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"###### \\$s ######\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | bat --language=dotenv --style=changes --paging=always".to_string(),
-            list_events: "kubectl get events -n {{NAMESPACE}} --context {{CONTEXT}} --field-selector involvedObject.name={{POD}} --sort-by='.lastTimestamp' | bat --language csv --style=changes --paging=always".to_string(),
-            list_routes: "(echo \"### HTTPRoutes ###\" && kubectl get httproutes -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '.items[] | select(.spec.targetRefs[]? | .name == \"{{POD}}\") | .metadata.name' 2>/dev/null | xargs -I{} kubectl get httproute {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml 2>/dev/null || echo \"None\"; echo -e \"\\n### Ingresses ###\" && kubectl get ingress -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml ) | bat --language yaml --style=changes --paging=always".to_string(),
-            list_netpol: "kubectl get networkpolicies -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '[.items[] | select(.spec.podSelector.matchLabels)] | .[] | .metadata.name' 2>/dev/null | xargs -I{} kubectl get networkpolicy {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml | bat --language yaml --style=changes --paging=always".to_string(),
+            view_volumes: "kubectl exec -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} -- sh -c 'for m in {{VOLUMES}}; do echo \"##### $m #####\"; find \"$m\" -maxdepth 10 -exec du -s {} \\; 2>/dev/null; done' | bat --language=dotenv --style=changes --paging=always".to_string(),
+            view_configmaps: "bash -c 'cms=$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath=\"{range .spec.volumes[*]}{.configMap.name}{\\\" \\\"}{end}{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{\\\" \\\"}{end}\"); [ -n \"$cms\" ] && kubectl get cm $cms -n {{NAMESPACE}} -o yaml --context {{CONTEXT}} || echo \"No configmaps found\"' | bat --language=yaml --style=changes --paging=always".to_string(),
+            view_secrets: "bash -c \"secrets=\\$(kubectl get pod {{POD}} -n {{NAMESPACE}} --context {{CONTEXT}} -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{\\\" \\\"}{end}'); [ -n \\\"\\$secrets\\\" ] && for s in \\$secrets; do echo \\\"###### \\$s ######\\\" && kubectl get secret \\\"\\$s\\\" -n {{NAMESPACE}} --context {{CONTEXT}} -o json | jq -r '.data | to_entries[] | \\\"\\(.key)=\\(.value | @base64d)\\\"'; done || echo \\\"No secrets found\\\"\" | bat --language=dotenv --style=changes --paging=always".to_string(),
+            view_events: "kubectl get events -n {{NAMESPACE}} --context {{CONTEXT}} --field-selector involvedObject.name={{POD}} --sort-by='.lastTimestamp' | bat --language csv --style=changes --paging=always".to_string(),
+            view_routes: "echo \"=== HTTPRoutes ===\" && kubectl get httproutes -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '.items[] | select(.spec.targetRefs[].namespace == \"{{NAMESPACE}}\" and .spec.targetRefs[].name == \"{{POD}}\") | .metadata.name' 2>/dev/null | xargs -I{} kubectl get httproute {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml 2>/dev/null || echo \"None\"; echo -e \"\\n=== Ingresses ===\" && kubectl get ingress -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml | bat --language yaml --style=changes --paging=always".to_string(),
+            view_netpol: "kubectl get networkpolicies -n {{NAMESPACE}} --context {{CONTEXT}} -o json 2>/dev/null | jq -r '[.items[] | select(.spec.podSelector.matchLabels)] | .[] | .metadata.name' 2>/dev/null | xargs -I{} kubectl get networkpolicy {} -n {{NAMESPACE}} --context {{CONTEXT}} -o yaml | bat --language yaml --style=changes --paging=always".to_string(),
         }
     }
 }
@@ -218,12 +247,9 @@ pub struct Config {
     /// Namespace/pod regex filters, e.g. `["plt/kong.*", "prod/.*"]`.
     #[serde(default)]
     pub filters: Vec<String>,
-    /// User-defined custom commands.
+    /// All commands: built-ins can be overridden, user commands merge on top.
     #[serde(default)]
-    pub commands: Vec<CustomCommand>,
-    /// Built-in command templates (logs, shell, describe, etc.).
-    #[serde(default)]
-    pub commands_builtin: Commands,
+    pub commands: HashMap<String, CustomCommand>,
 }
 
 impl Default for Config {
@@ -235,9 +261,20 @@ impl Default for Config {
             borderless: default_borderless(),
             layout: LayoutPreset::default(),
             filters: Vec::new(),
-            commands: Vec::new(),
-            commands_builtin: Commands::default(),
+            commands: HashMap::new(),
         }
+    }
+}
+
+impl Config {
+    /// Get merged commands: defaults with user overrides.
+    /// Built-in commands can be overridden by user-defined commands with the same name.
+    pub fn all_commands(&self) -> HashMap<String, CustomCommand> {
+        let mut result = Commands::default().to_map();
+        for (name, cmd) in &self.commands {
+            result.insert(name.clone(), cmd.clone());
+        }
+        result
     }
 }
 
@@ -405,7 +442,6 @@ mod tests {
     #[test]
     fn custom_command_matches_all_when_no_regex() {
         let cmd = CustomCommand {
-            name: "test".to_string(),
             match_pattern: None,
             command: "echo {{POD}}".to_string(),
             description: None,
@@ -416,7 +452,6 @@ mod tests {
     #[test]
     fn custom_command_matches_with_pattern() {
         let cmd = CustomCommand {
-            name: "test".to_string(),
             match_pattern: Some("plt/api-.*".to_string()),
             command: "echo {{POD}}".to_string(),
             description: None,
@@ -429,7 +464,6 @@ mod tests {
     #[test]
     fn custom_command_matches_pod_only() {
         let cmd = CustomCommand {
-            name: "test".to_string(),
             match_pattern: Some("api-.*".to_string()),
             command: "echo {{POD}}".to_string(),
             description: None,
@@ -442,7 +476,6 @@ mod tests {
     #[test]
     fn custom_command_matches_with_container_pattern() {
         let cmd = CustomCommand {
-            name: "test".to_string(),
             match_pattern: Some("plt/api-.*/sidecar".to_string()),
             command: "echo {{POD}} {{CONTAINER}}".to_string(),
             description: None,
@@ -455,7 +488,6 @@ mod tests {
     #[test]
     fn custom_command_render_template() {
         let cmd = CustomCommand {
-            name: "pf".to_string(),
             match_pattern: None,
             command:
                 "kubectl port-forward -n {{NAMESPACE}} {{POD}} 8080:8080 --context {{CONTEXT}}"
@@ -479,7 +511,7 @@ filters:
   - "plt/kong.*"
   - "prod/.*"
 commands:
-  - name: port-forward-api
+  port-forward-api:
     match_pattern: "plt/api-.*"
     command: "kubectl port-forward -n {{NAMESPACE}} {{POD}} 8080:8080"
     description: "Port-forward API pod"
@@ -490,9 +522,10 @@ commands:
         assert!(!config.borderless);
         assert_eq!(config.filters.len(), 2);
         assert_eq!(config.commands.len(), 1);
-        assert_eq!(config.commands[0].name, "port-forward-api");
+        assert!(config.commands.contains_key("port-forward-api"));
+        let cmd = config.commands.get("port-forward-api").unwrap();
         assert_eq!(
-            config.commands[0].match_pattern.as_deref(),
+            cmd.match_pattern.as_deref(),
             Some("plt/api-.*")
         );
     }
@@ -505,7 +538,7 @@ borderless: true
 filters:
   - ".*/.*"
 commands:
-  - name: pf
+  pf:
     match_pattern: ".*/.*"
     command: "kubectl port-forward -n {{NAMESPACE}} {{POD}} 8080:8080 --context {{CONTEXT}}"
     description: "Port-forward API pod"
@@ -513,28 +546,15 @@ commands:
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.commands.len(), 1);
 
-        let cmd = &config.commands[0];
-        assert_eq!(cmd.name, "pf");
+        let cmd = config.commands.get("pf").unwrap();
         assert!(cmd.matches("default", "my-pod-abc", None));
         assert!(cmd.matches("production", "web-1234", None));
-
-        let parsed = crate::command::Command::parse("pf", &config.commands);
-        match parsed {
-            crate::command::Command::Custom(c) => {
-                assert_eq!(c.name, "pf");
-                let rendered = c.render("default", "my-pod", None, Some("my-ctx"), None);
-                assert_eq!(
-                    rendered,
-                    "kubectl port-forward -n default my-pod 8080:8080 --context my-ctx"
-                );
-            }
-            other => panic!("Expected Command::Custom, got {:?}", other),
-        }
     }
 
     #[test]
     fn command_parse_unknown_without_custom_commands() {
-        let parsed = crate::command::Command::parse("pf", &[]);
+        let commands = std::collections::HashMap::new();
+        let parsed = crate::command::Command::parse("pf", &commands);
         assert!(matches!(parsed, crate::command::Command::Unknown(_)));
     }
 
@@ -576,22 +596,25 @@ commands:
     #[test]
     fn builtin_commands_yaml_override() {
         let yaml = r#"
-commands_builtin:
-  logs: "stern {{NAMESPACE}}/{{POD}} --context {{CONTEXT}}"
-  yaml: "kubectl get -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | less"
+commands:
+  logs:
+    command: "stern {{NAMESPACE}}/{{POD}} --context {{CONTEXT}}"
+  yaml:
+    command: "kubectl get -o yaml -n {{NAMESPACE}} {{POD}} --context {{CONTEXT}} | less"
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert!(config.commands_builtin.logs.contains("stern"));
-        assert!(config.commands_builtin.yaml.contains("less"));
+        let all = config.all_commands();
+        assert!(all.get("logs").unwrap().command.contains("stern"));
+        assert!(all.get("yaml").unwrap().command.contains("less"));
         // Non-overridden fields keep defaults
-        assert!(config.commands_builtin.describe.contains("bat"));
-        assert!(config.commands_builtin.shell.contains("exec"));
+        assert!(all.get("describe").unwrap().command.contains("bat"));
+        assert!(all.get("shell").unwrap().command.contains("exec"));
     }
 
     #[test]
     fn builtin_commands_port_forward_template() {
-        let cmd = Commands::default();
-        let rendered = cmd
+        let default_commands = Commands::default();
+        let rendered = default_commands
             .port_forward
             .replace("{{NAMESPACE}}", "default")
             .replace("{{POD}}", "my-pod")

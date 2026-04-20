@@ -1,5 +1,5 @@
 # k9t configuration (~/.config/k9t.yaml)
-# Customize theme, filters, custom commands, and built-in command templates
+# Customize theme, filters, and command templates
 
 # Theme: tokyo_night, nord, gruvbox_dark, monokai, one_dark, solarized_dark
 theme: tokyo_night
@@ -18,13 +18,17 @@ borderless: true
 #   - "prod/api-.*"
 #   - "staging/.*"
 
-# Custom commands (matched by regex pattern)
+# Commands — built-ins can be overridden, add custom commands as needed
+# All commands are defined in a single map. Command name is the key.
+# Built-in commands: logs, previous_logs, shell, describe, yaml, set_image,
+#                   port_forward, debug, view_volumes, view_configmaps,
+#                   view_secrets, view_events, view_routes, view_netpol
 # commands:
-#   - name: port-forward
+#   # Override a built-in
+#   logs:
+#     command: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} | hl"
+#   # Add a custom command
+#   stern:
 #     match_pattern: "prod/.*"
-#     command: "kubectl port-forward -n {{NAMESPACE}} {{POD}} 8080:8080"
-#     description: "Port forward to local 8080"
-
-# Built-in command templates overrides
-# commands_builtin:
-#   logs: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} --context {{CONTEXT}} | hl"
+#     command: "stern {{NAMESPACE}}/{{POD}} --context {{CONTEXT}} -c {{CONTAINER}}"
+#     description: "Tail logs with stern"

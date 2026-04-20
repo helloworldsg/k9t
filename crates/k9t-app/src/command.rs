@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+
 use crate::config::CustomCommand;
+
+pub type CommandMap = HashMap<String, CustomCommand>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Quit,
-    Custom(CustomCommand),
+    Custom { name: String, cmd: CustomCommand },
     Unknown(String),
 }
 
@@ -22,7 +26,7 @@ pub struct CommandItem {
 
 impl CommandItem {
     /// Build the full list of palette items from built-in commands + user custom commands.
-    pub fn build_list(custom_commands: &[CustomCommand]) -> Vec<CommandItem> {
+    pub fn build_list(custom_commands: &HashMap<String, CustomCommand>) -> Vec<CommandItem> {
         let mut items: Vec<CommandItem> = Vec::new();
 
         // Built-in commands
@@ -33,14 +37,17 @@ impl CommandItem {
             command: Command::Quit,
         });
 
-        // Custom commands from config
-        for cc in custom_commands {
+        // Custom commands from config (map key is the command name)
+        for (name, cc) in custom_commands {
             let desc = cc.description.clone().unwrap_or_else(|| cc.command.clone());
             items.push(CommandItem {
-                name: cc.name.clone(),
+                name: name.clone(),
                 description: desc,
                 is_custom: true,
-                command: Command::Custom(cc.clone()),
+                command: Command::Custom {
+                    name: name.clone(),
+                    cmd: cc.clone(),
+                },
             });
         }
 
@@ -78,12 +85,15 @@ impl Command {
     /// Parse a command-mode input string against built-in commands and custom commands.
     ///
     /// Custom commands are tried first (by name), then built-in aliases.
-    pub fn parse(input: &str, custom_commands: &[CustomCommand]) -> Self {
+    pub fn parse(input: &str, custom_commands: &HashMap<String, CustomCommand>) -> Self {
         let input = input.trim();
 
-        // Check custom commands by name first
-        if let Some(cmd) = custom_commands.iter().find(|c| c.name == input) {
-            return Command::Custom(cmd.clone());
+        // Check custom commands by name first (direct lookup in map)
+        if let Some(cmd) = custom_commands.get(input) {
+            return Command::Custom {
+                name: input.to_string(),
+                cmd: cmd.clone(),
+            };
         }
 
         // Built-in commands
@@ -97,6 +107,7 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn fuzzy_match_basic() {
@@ -119,5 +130,21 @@ mod tests {
         assert!(item.fuzzy_matches("pf"));
         assert!(item.fuzzy_matches("port"));
         assert!(!item.fuzzy_matches("xyz"));
+    }
+
+    #[test]
+    fn build_list_with_commands() {
+        let mut commands = HashMap::new();
+        commands.insert(
+            "pf".to_string(),
+            CustomCommand {
+                match_pattern: None,
+                command: "kubectl port-forward".to_string(),
+                description: Some("Port-forward".to_string()),
+            },
+        );
+        let items = CommandItem::build_list(&commands);
+        assert_eq!(items.len(), 2); // quit + 1 custom
+        assert_eq!(items[1].name, "pf");
     }
 }

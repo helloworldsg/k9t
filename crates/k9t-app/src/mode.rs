@@ -40,10 +40,16 @@ pub enum ContainerAction {
     ListEvents,
     ListRoutes,
     ListNetpol,
-    Custom(CustomCommand),
+    Custom { name: String, cmd: CustomCommand },
 }
 
 impl ContainerAction {
+    /// Label shown in the actions dialog.
+    /// Returns true if this is a user-defined custom command.
+    pub fn is_custom(&self) -> bool {
+        matches!(self, ContainerAction::Custom { .. })
+    }
+
     /// Label shown in the actions dialog.
     pub fn label(&self) -> String {
         match self {
@@ -61,11 +67,8 @@ impl ContainerAction {
             ContainerAction::ListEvents => "View events".to_string(),
             ContainerAction::ListRoutes => "View routes".to_string(),
             ContainerAction::ListNetpol => "View network policies".to_string(),
-            ContainerAction::Custom(cmd) => format!(
-                ":{} {}",
-                cmd.name,
-                cmd.description.as_deref().unwrap_or(&cmd.command)
-            ),
+            ContainerAction::Custom { name: _, cmd } => cmd.description.clone()
+                .unwrap_or_else(|| cmd.command.clone()),
         }
     }
 }

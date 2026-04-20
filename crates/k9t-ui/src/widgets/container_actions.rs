@@ -32,7 +32,7 @@ pub fn render_container_actions(
     };
     let max_action_len = filtered_actions
         .iter()
-        .map(|a| a.label().len() + 3) // " > " prefix
+        .map(|a| a.label().len() + if a.is_custom() { 4 } else { 3 }) // " > " prefix or " > *" for custom
         .max()
         .unwrap_or(0)
         .max(20); // minimum for "No matching actions"
@@ -116,17 +116,23 @@ pub fn render_container_actions(
             .take(visible_height)
             .map(|(i, action)| {
                 let is_highlighted = i == selected_index;
+                let is_custom = action.is_custom();
                 let label = action.label();
 
                 let indicator = if is_highlighted { " > " } else { "   " };
+                let custom_marker = if is_custom { "*" } else { "" };
                 let style = if is_highlighted {
                     theme.selected_style()
+                } else if is_custom {
+                    // Custom commands get a dimmed/colored style to differentiate
+                    theme.fg_muted()
                 } else {
                     theme.fg_default()
                 };
 
                 Line::from(vec![
                     Span::styled(indicator.to_string(), style),
+                    Span::styled(custom_marker, style),
                     Span::styled(label, style),
                 ])
             })

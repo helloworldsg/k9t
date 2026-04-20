@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 
 use k9t_core::{ContainerDetail, PodInfo};
 
 use crate::command::{Command, CommandItem};
-use crate::config::{CommandTemplate, Commands, CustomCommand};
+use crate::config::{CommandTemplate, CustomCommand};
 use crate::event::AppEvent;
 use crate::mode::{ConfirmContext, ConfirmFocus, ContainerAction, ContainerPickerIntent, Mode};
 
@@ -166,8 +166,8 @@ pub struct App {
     pub container_choices: Vec<String>,
     /// Index of the highlighted item in the container picker.
     pub container_picker_index: usize,
-    /// User-defined custom commands loaded from config.
-    pub custom_commands: Vec<CustomCommand>,
+    /// All commands (built-ins + user overrides).
+    pub commands: HashMap<String, CustomCommand>,
     /// All kubeconfig context names available for switching.
     pub available_contexts: Vec<String>,
     /// Index of the highlighted item in the context picker.
@@ -207,13 +207,11 @@ pub struct App {
     pub container_actions: Vec<ContainerAction>,
     /// Selected index in the container actions dialog.
     pub container_actions_index: usize,
-    /// Focused button in the confirm dialog (Yes/No).
+/// Focused button in the confirm dialog (Yes/No).
     pub confirm_focus: ConfirmFocus,
-    /// Built-in command templates (logs, shell, describe, etc.) from config.
-    pub commands_builtin: Commands,
 }
 
-/// A kubectl subcommand to run outside the TUI (suspend/resume pattern).
+    /// A kubectl subcommand to run outside the TUI (suspend/resume pattern).
 /// A shell command to run when the TUI is suspended.
 /// Paged commands (logs, yaml, describe) include the pager in the command string itself
 /// (e.g. `bash -c "kubectl ... | hl"`), so they're visible and overridable in config.
@@ -239,13 +237,12 @@ impl ShellCommand {
 
 impl App {
     pub fn new(context_name: Option<String>) -> Self {
-        Self::with_commands(context_name, Vec::new(), Commands::default())
+        Self::with_commands(context_name, HashMap::new())
     }
 
     pub fn with_commands(
         context_name: Option<String>,
-        custom_commands: Vec<CustomCommand>,
-        commands_builtin: Commands,
+        commands: HashMap<String, CustomCommand>,
     ) -> Self {
         Self {
             mode: Mode::Normal,
@@ -275,7 +272,7 @@ impl App {
             pending_async_action: None,
             container_choices: Vec::new(),
             container_picker_index: 0,
-            custom_commands,
+            commands,
             available_contexts: Vec::new(),
             context_picker_index: 0,
             context_picker_search: String::new(),
@@ -296,7 +293,6 @@ impl App {
             container_actions: Vec::new(),
             container_actions_index: 0,
             confirm_focus: ConfirmFocus::default(),
-            commands_builtin,
         }
     }
 
@@ -333,9 +329,9 @@ impl App {
         previous: bool,
     ) -> ShellCommand {
         let template = if previous {
-            &self.commands_builtin.previous_logs
+            self.commands.get("previous_logs").map(|c| c.command.as_str()).unwrap_or_default()
         } else {
-            &self.commands_builtin.logs
+            self.commands.get("logs").map(|c| c.command.as_str()).unwrap_or_default()
         };
         self.render_builtin(template, namespace, pod_name, container, &[])
     }
@@ -347,7 +343,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.shell,
+            self.commands.get("shell").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -357,7 +353,7 @@ impl App {
 
     pub fn build_describe_cmd(&self, namespace: &str, pod_name: &str) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.describe,
+            self.commands.get("describe").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             None,
@@ -366,7 +362,8 @@ impl App {
     }
 
     pub fn build_yaml_cmd(&self, namespace: &str, pod_name: &str) -> ShellCommand {
-        self.render_builtin(&self.commands_builtin.yaml, namespace, pod_name, None, &[])
+        let template = self.commands.get("yaml").map(|c| c.command.as_str()).unwrap_or_default();
+        self.render_builtin(template, namespace, pod_name, None, &[])
     }
 
     pub fn build_set_image_cmd(
@@ -377,7 +374,7 @@ impl App {
         image: &str,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.set_image,
+            self.commands.get("set_image").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             Some(container),
@@ -393,7 +390,7 @@ impl App {
         ports: &str,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.port_forward,
+            self.commands.get("port_forward").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -408,7 +405,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.debug,
+            self.commands.get("debug").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -424,7 +421,7 @@ impl App {
         volumes: &str,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.list_volumes,
+            self.commands.get("view_volumes").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -439,7 +436,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.list_configmaps,
+            self.commands.get("view_configmaps").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -454,7 +451,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.list_secrets,
+            self.commands.get("view_secrets").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -469,7 +466,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.list_events,
+            self.commands.get("view_events").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -484,7 +481,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.list_routes,
+            self.commands.get("view_routes").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -499,7 +496,7 @@ impl App {
         container: Option<&str>,
     ) -> ShellCommand {
         self.render_builtin(
-            &self.commands_builtin.list_netpol,
+            self.commands.get("view_netpol").map(|c| c.command.as_str()).unwrap_or_default(),
             namespace,
             pod_name,
             container,
@@ -1146,9 +1143,14 @@ impl App {
                 if pod.restarts >= 1 {
                     actions.insert(1, ContainerAction::PreviousLogs);
                 }
-                for cmd in &self.custom_commands {
-                    if cmd.matches(&pod.namespace, &pod.name, None) {
-                        actions.push(ContainerAction::Custom(cmd.clone()));
+                // Add custom commands that are not built-ins
+                let builtins = ["logs", "previous_logs", "shell", "describe", "yaml", "set_image", "port_forward", "debug", "view_volumes", "view_configmaps", "view_secrets", "view_events", "view_routes", "view_netpol"];
+                for (name, cmd) in &self.commands {
+                    if !builtins.contains(&name.as_str()) && cmd.matches(&pod.namespace, &pod.name, None) {
+                        actions.push(ContainerAction::Custom {
+                            name: name.clone(),
+                            cmd: cmd.clone(),
+                        });
                     }
                 }
                 self.container_actions = actions;
@@ -1386,7 +1388,7 @@ impl App {
                             Some(&container.name),
                         ));
                     }
-                    ContainerAction::Custom(cmd) => {
+                    ContainerAction::Custom { name: _, cmd } => {
                         let volumes = container
                             .volume_mounts
                             .iter()
@@ -1496,7 +1498,7 @@ impl App {
             Mode::CommandPalette { query, .. } => query.as_str(),
             _ => "",
         };
-        CommandItem::build_list(&self.custom_commands)
+        CommandItem::build_list(&self.commands)
             .into_iter()
             .filter(|item| item.fuzzy_matches(query))
             .collect()
@@ -1938,9 +1940,9 @@ impl App {
             Command::Quit => {
                 self.should_quit = true;
             }
-            Command::Custom(custom_cmd) => {
+            Command::Custom { name, cmd } => {
                 if let Some(pod) = self.selected_pod_cloned() {
-                    if !custom_cmd.matches(
+                    if !cmd.matches(
                         &pod.namespace,
                         &pod.name,
                         self.selected_container_name().as_deref(),
@@ -1948,7 +1950,7 @@ impl App {
                         self.show_toast(
                             format!(
                                 "Command '{}' does not match {}/{}",
-                                custom_cmd.name, pod.namespace, pod.name
+                                name, pod.namespace, pod.name
                             ),
                             ToastType::Warning,
                             8,
@@ -1971,7 +1973,7 @@ impl App {
                                 .join(" ")
                         })
                         .unwrap_or_default();
-                    let rendered = custom_cmd.render(
+                    let rendered = cmd.render(
                         &pod.namespace,
                         &pod.name,
                         container_name.as_deref(),

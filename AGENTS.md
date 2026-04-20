@@ -38,6 +38,19 @@ k9t is a Rust terminal UI for Kubernetes, organized as a Cargo workspace with 4 
 - **TableRow enum** flattens pods+containers into a single selectable list; `Pod` rows expand to show `Container` sub-rows
 - **Namespace selection** uses a "staged" pattern: `staged_namespaces` is modified in the picker, committed on Enter, discarded on Esc
 - **Config** supports YAML (`~/.config/k9t.yaml`) with `CustomCommand` templates using `{{NAMESPACE}}`, `{{POD}}`, `{{CONTAINER}}`, `{{CONTEXT}}`
+  - Commands are defined as a map (name is the key), merged with built-in defaults:
+    ```yaml
+    commands:
+      logs:
+        command: "kubectl logs -f -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} | hl"
+      shell:
+        command: "kubectl exec -it -n {{NAMESPACE}} {{POD}} -c {{CONTAINER}} -- sh"
+      my-custom:
+        match_pattern: ".*/api-.*"  # namespace/pod regex (optional)
+        command: "echo test"
+        description: "My custom command"
+    ```
+  - Built-in commands: logs, previous_logs, shell, describe, yaml, set_image, port_forward, debug, view_volumes, view_configmaps, view_secrets, view_events, view_routes, view_netpol
 - **Theme** uses `NO_COLOR=1` env var for monochrome, `COLOR_SCHEME` env var for light mode detection; `Theme::auto()` picks the default
 
 ## CI

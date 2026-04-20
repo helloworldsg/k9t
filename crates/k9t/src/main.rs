@@ -26,8 +26,7 @@ fn reload_config(
     config_modified: &mut std::time::SystemTime,
 ) {
     if let Some(new_config) = Config::reload_if_changed(config_path, *config_modified) {
-        app.custom_commands = new_config.commands;
-        app.commands_builtin = new_config.commands_builtin;
+        app.commands = new_config.all_commands();
         if let Ok(meta) = std::fs::metadata(config_path) {
             if let Ok(m) = meta.modified() {
                 *config_modified = m;
@@ -275,8 +274,7 @@ async fn main() -> Result<()> {
 
     let mut app = App::with_commands(
         resolve_context_name(cli.context.as_deref()).await.ok(),
-        config.commands.clone(),
-        config.commands_builtin.clone(),
+        config.all_commands(),
     );
     if config.wide_pod_columns {
         app.pod_table_mode = PodTableMode::Wide;
@@ -934,13 +932,13 @@ async fn main() -> Result<()> {
                     ];
 
                     // ── Custom Commands (from config) ──
-                    if !app.custom_commands.is_empty() {
+                    if !app.commands.is_empty() {
                         right_lines.push(ratatui::text::Line::from(""));
                         right_lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                            " Custom Commands  (~/.config/k9t.yaml)",
+                            " Commands  (~/.config/k9t.yaml)",
                             title,
                         )));
-                        for cc in &app.custom_commands {
+                        for (name, cc) in &app.commands {
                             let desc = cc.description.as_deref().unwrap_or(&cc.command);
                             let desc_display = if desc.len() > 38 {
                                 format!("{}…", &desc[..35])
@@ -949,7 +947,7 @@ async fn main() -> Result<()> {
                             };
                             right_lines.push(ratatui::text::Line::from(vec![
                                 ratatui::text::Span::styled(
-                                    format!("   :{:<10}", cc.name),
+                                    format!("   :{:<10}", name),
                                     cmd_style,
                                 ),
                                 ratatui::text::Span::styled(desc_display, dim),

@@ -9,6 +9,6 @@ pub use app::{
     ToastType,
 };
 pub use command::{Command, CommandItem};
-pub use config::{Commands, Config, CustomCommand};
+pub use config::{Config, CustomCommand};
 pub use event::AppEvent;
 pub use mode::{ConfirmContext, ConfirmFocus, ContainerPickerIntent, Mode};
